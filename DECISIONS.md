@@ -583,3 +583,23 @@ subject to the 100 MB cap for their own uploads — documented in
 `OTHER-PLATFORMS.md` and the runbook — and large files on the WD share itself
 are stored as parts. The parts are plain byte-splits (`cat parts > file`
 reconstructs exactly), so no data is ever hostage to rclone or GoldenCloud.
+
+### D-029 — The server builds on Windows for local testing, though it only ships for Linux
+
+**Context.** A layman trying GoldenCloud on a single Windows laptop needs to run
+the server there. The release only ships `linux/amd64` and `linux/arm64`
+binaries, and the server did not even cross-compile to Windows: the atomic
+`users.yaml` writer read `syscall.Stat_t` inline to preserve `root:goldencloud`
+ownership across a rewrite, which does not exist off Unix.
+
+**Decision.** The ownership-preservation is now a build-tagged helper —
+`preserveOwner` in `owner_unix.go` (the real Unix behaviour) and
+`owner_other.go` (a no-op). The server therefore cross-compiles to
+`windows/amd64` unchanged in behaviour on Linux, purely so it can be run on a
+Windows laptop for a local end-to-end try (`GoldenCloud-LocalTest` kit). The
+supported production target is still Linux only; `require_mountpoint` remains
+Linux-only and refuses loudly elsewhere (D-022).
+
+**Consequence.** No release artefact changes — Windows is a convenience build,
+not a shipped one. The kit's server binary is stamped `v0.1.0-localtest` so it
+can never be mistaken for a release download.

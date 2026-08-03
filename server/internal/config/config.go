@@ -22,7 +22,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/yaml.v3"
@@ -534,21 +533,17 @@ func writeFileAtomic(dst string, data []byte, perm os.FileMode) error {
 		os.Remove(tmpName) // no-op once the rename has succeeded
 	}()
 
-	uid, gid := -1, -1
 	if st, err := os.Stat(dst); err == nil {
 		perm = st.Mode().Perm()
-		if sys, ok := st.Sys().(*syscall.Stat_t); ok {
-			uid, gid = int(sys.Uid), int(sys.Gid)
-		}
 	}
 	if err := tmp.Chmod(perm); err != nil {
 		return fmt.Errorf("atomic write: %w", err)
 	}
-	if uid >= 0 && gid >= 0 {
-		// Best effort: only root can hand a file to another owner, and a
-		// non-root operator editing their own file does not need to.
-		_ = tmp.Chown(uid, gid)
-	}
+	// On Unix, hand the temp file the existing file's owner so a root-written
+	// users.yaml keeps its root:goldencloud ownership across a rewrite. A no-op
+	// on platforms without Unix ownership (e.g. a Windows box used for local
+	// testing), which is why it lives in a build-tagged helper.
+	preserveOwner(tmp, dst)
 	if _, err := tmp.Write(data); err != nil {
 		return fmt.Errorf("atomic write: %w", err)
 	}
