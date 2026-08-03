@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>GoldenCloud.Core</RootNamespace>
+    <AssemblyName>GoldenCloud.Core</AssemblyName>
+    <IsPackable>false</IsPackable>
+    <!-- Not a test project: keeps `dotnet test GoldenCloud.sln` from probing it. -->
+    <IsTestProject>false</IsTestProject>
+  </PropertyGroup>
+
+</Project>
