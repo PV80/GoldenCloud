@@ -1,0 +1,177 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.25"
+  DOTNET_VERSION: "8.0.x"
+
+jobs:
+  server-lint:
+    name: Server · lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: server/go.sum
+      - name: gofmt
+        working-directory: server
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::These files are not gofmt-clean:"
+            echo "$unformatted"
+            gofmt -d .
+            exit 1
+          fi
+      - name: go vet
+        working-directory: server
+        run: go vet ./...
+      - name: staticcheck
+        working-directory: server
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@2025.1.1
+          "$(go env GOPATH)/bin/staticcheck" ./...
+      - name: go mod tidy is clean
+        working-directory: server
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+  server-test:
+    name: Server · unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: server/go.sum
+      - name: Unit tests (race detector, coverage)
+        working-directory: server
+        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+      - name: Coverage summary
+        working-directory: server
+        run: go tool cover -func=coverage.out | tail -20
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-coverage
+          path: server/coverage.out
+
+  server-integration:
+    name: Server · integration tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: server/go.sum
+      - name: Build server binary
+        working-directory: server
+        run: go build -o "$RUNNER_TEMP/goldencloud" ./cmd/goldencloud
+      - name: Integration suite against the real binary
+        working-directory: server
+        env:
+          GOLDENCLOUD_BINARY: ${{ runner.temp }}/goldencloud
+        run: go test -tags=integration -timeout=30m -v ./integration/...
+
+  server-build:
+    name: Server · cross-compile
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: arm64
+          - goos: linux
+            goarch: amd64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: server/go.sum
+      - name: Build goldencloud-server-${{ matrix.goos }}-${{ matrix.goarch }}
+        working-directory: server
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          go build -trimpath \
+            -ldflags "-s -w -X main.version=${GITHUB_SHA::7}" \
+            -o "../dist/goldencloud-server-${{ matrix.goos }}-${{ matrix.goarch }}" \
+            ./cmd/goldencloud
+      - uses: actions/upload-artifact@v4
+        with:
+          name: goldencloud-server-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/goldencloud-server-${{ matrix.goos }}-${{ matrix.goarch }}
+          if-no-files-found: error
+
+  client-test:
+    name: Client · build + tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+      - name: Restore
+        working-directory: client
+        run: dotnet restore GoldenCloud.sln
+      - name: Build
+        working-directory: client
+        run: dotnet build GoldenCloud.sln -c Release --no-restore
+      - name: Test
+        working-directory: client
+        run: dotnet test GoldenCloud.sln -c Release --no-build --verbosity normal
+
+  client-package:
+    name: Client · installer
+    runs-on: windows-latest
+    needs: client-test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+      - name: Publish self-contained single-file
+        working-directory: client
+        env:
+          GOLDENCLOUD_SERVER_URL: ${{ vars.GOLDENCLOUD_SERVER_URL }}
+        shell: pwsh
+        run: ./build.ps1 -Configuration Release
+      - name: Build installer
+        working-directory: client
+        shell: pwsh
+        run: ./package.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GoldenCloudSetup
+          path: client/installer/Output/GoldenCloudSetup.exe
+          if-no-files-found: error
+
+  docs:
+    name: Docs · link and structure check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check required documents exist and cross-links resolve
+        run: python3 scripts/check_docs.py

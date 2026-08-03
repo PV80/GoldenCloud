@@ -1,0 +1,28 @@
+# Build output
+/server/goldencloud
+/server/goldencloud-*
+/dist/
+/client/**/bin/
+/client/**/obj/
+/client/installer/Output/
+
+# Real user data and secrets — never commit
+users.yaml
+*.pem
+*.key
+cert.json
+*.cloudflared.json
+/deploy/credentials/
+
+# Test scratch
+/server/testdata/tmp/
+*.test
+coverage.out
+coverage.html
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
