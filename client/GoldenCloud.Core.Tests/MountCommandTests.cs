@@ -95,7 +95,7 @@ public class MountCommandTests
         MountCommand command = new RcloneMountCommandBuilder().BuildMount(Request(), obscured);
 
         Assert.Equal(obscured, command.Environment[RcloneMountCommandBuilder.PasswordEnvironmentVariable]);
-        Assert.Equal(1, command.Environment.Count);
+        Assert.Single(command.Environment);
         Assert.Null(command.StandardInput);
     }
 
@@ -142,7 +142,7 @@ public class MountCommandTests
         // The '*' placeholder is what makes net.exe read the password from stdin.
         Assert.Contains(NetUseMountCommandBuilder.PasswordPlaceholder, command.Arguments);
         Assert.Equal(Password + "\r\n", command.StandardInput);
-        Assert.Equal(0, command.Environment.Count);
+        Assert.Empty(command.Environment);
     }
 
     [Fact]
@@ -172,7 +172,7 @@ public class MountCommandTests
         Assert.NotNull(command);
         Assert.Equal(new[] { "use", "G:", "/delete", "/y" }, command!.Arguments.ToArray());
         Assert.Null(command.StandardInput);
-        Assert.Equal(0, command.Environment.Count);
+        Assert.Empty(command.Environment);
     }
 
     // ---- shared -------------------------------------------------------------
