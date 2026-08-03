@@ -98,10 +98,14 @@ escape character.
 .\goldencloud.exe user list --config C:\goldencloud-test\config.yaml
 ```
 
-Use passwords you can retype quickly — `TestAlice123!` and `TestBob123!` are
-fine for a throwaway server. **Write them down.**
+You are prompted for each password twice (`New password for testalice:` then
+`Repeat password:`), and nothing appears as you type. Use passwords you can
+retype quickly — `TestAlice123!` and `TestBob123!` are fine for a throwaway
+server. They must be at least 8 characters; anything shorter is refused with
+`the password must be at least 8 characters`. **Write them down.**
 
-*Expected:* `user list` shows both.
+*Expected:* `user list` prints a `USERNAME  QUOTA  FOLDER` table with both, the
+quota column reading `unlimited`.
 
 **Result:** ☐ Pass ☐ Fail — Notes: ______
 
@@ -111,9 +115,15 @@ fine for a throwaway server. **Write them down.**
 .\goldencloud.exe serve --config C:\goldencloud-test\config.yaml
 ```
 
-*Expected:* log lines ending in `listening addr=127.0.0.1:8080`, then it sits
-there. Watching this window during later steps is the fastest way to see what
-the client is actually sending.
+*Expected:* four startup lines, the last of them reading
+
+```
+time=... level=INFO msg=listening addr=127.0.0.1:8080 tls=false trusted_proxy=false
+```
+
+then it sits there. Watching this window during later steps is the fastest way
+to see what the client is actually sending — `log_level: "debug"` in step 3 is
+what makes it print a line per request.
 
 **Result:** ☐ Pass ☐ Fail — Notes: ______
 
@@ -316,7 +326,10 @@ for a server address, that is a failure.
 or password was not recognised." **Not** a raw `401 Unauthorized`, a stack
 trace, or a silent failure. No drive appears.
 
-Check the server window from step 5: it should log a failed authentication.
+Check the server window from step 5: it should log
+`level=WARN msg="authentication failed" username=testalice client=127.0.0.1`.
+Note that after five wrong guesses in a row the server starts answering `429`
+instead of `401` for a minute or so — that is the rate limiter, not a bug.
 
 **Result:** ☐ Pass ☐ Fail — Error message shown: ______________________
 

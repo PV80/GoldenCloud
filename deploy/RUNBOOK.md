@@ -1263,8 +1263,10 @@ The four lines that matter:
   sub-folder of the share rather than the share root, so GoldenCloud's data
   cannot collide with anything already on the WD unit.
 - **`users_file`** — the user database. Section 12 fills it in.
-- **`log_level: "info"`** — one line per request plus warnings. Enough to
-  diagnose problems, not enough to wear out the SD card.
+- **`log_level: "info"`** — startup, shutdown and reload messages, plus
+  warnings such as failed sign-ins. It does **not** write a line per request;
+  that is `debug`, which is far noisier and wears the SD card out faster. Turn
+  `debug` on only while chasing a specific problem.
 
 Save with **Ctrl+O**, **Enter**, exit with **Ctrl+X**.
 
@@ -1329,11 +1331,15 @@ sudo -u goldencloud /usr/local/bin/goldencloud serve --config /etc/goldencloud/c
 *Expected output:* something like
 
 ```
-level=info msg="goldencloud starting" version=v0.1.0
-level=info msg="storage root ok" path=/mnt/wd/goldencloud
-level=info msg="loaded users" count=0
-level=info msg="listening" addr=127.0.0.1:8080
+time=2026-08-03T10:57:03.114Z level=INFO msg="goldencloud starting" version=v0.1.0
+time=2026-08-03T10:57:03.114Z level=INFO msg="storage root ok" path=/mnt/wd/goldencloud
+time=2026-08-03T10:57:03.114Z level=INFO msg="loaded users" count=0
+time=2026-08-03T10:57:03.115Z level=INFO msg=listening addr=127.0.0.1:8080 tls=false trusted_proxy=false
 ```
+
+Four lines, each starting with a timestamp and an upper-case level. The last
+one repeats back the two safety settings — `tls=false trusted_proxy=false` is
+what you want here, because Cloudflare does the HTTPS.
 
 Then it sits there. That is correct — it is running. Press **Ctrl+C** to stop
 it and get your prompt back.
@@ -1341,9 +1347,10 @@ it and get your prompt back.
 *If you see a YAML error* naming a line number: go back to step 83 and check
 that line, usually for a tab character or a missing quote.
 
-*If you see* `storage root does not exist` *or a permission error about
-`/mnt/wd/goldencloud`*: expected at this point. The next section creates it.
-Press Ctrl+C and carry on.
+*If you see* `goldencloud: preflight check failed: storage_root
+/mnt/wd/goldencloud does not exist; create it, or check that the share is
+mounted`: expected at this point. The next section creates it. Press Ctrl+C and
+carry on.
 
 > ### ✅ How to know it worked
 >
@@ -1543,8 +1550,11 @@ systemctl status goldencloud
      CGroup: /system.slice/goldencloud.service
              └─1442 /usr/local/bin/goldencloud serve --config /etc/goldencloud/config.yaml
 
-Aug 03 11:12:44 goldencloud goldencloud[1442]: level=info msg="listening" addr=127.0.0.1:8080
+Aug 03 11:12:44 goldencloud goldencloud[1442]: time=2026-08-03T11:12:44.187Z level=INFO msg=listening addr=127.0.0.1:8080 tls=false trusted_proxy=false
 ```
+
+(That line carries two timestamps: `journalctl` adds the one on the left, and
+the server writes its own `time=` field. They agree.)
 
 The two words you are looking for are **`enabled`** and **`active (running)`**.
 
@@ -1639,7 +1649,7 @@ account on the machine.
 
 ```
 New password for alice:
-Retype new password:
+Repeat password:
 Added user "alice".
   folder: /mnt/wd/goldencloud/alice
   quota:  unlimited
@@ -1648,12 +1658,22 @@ Reload the running server with: systemctl reload goldencloud
 
 Nothing appears as you type the password. Type it twice.
 
-*If you see* `the two passwords do not match`: nothing was created. Run the
-command again.
+The password must be **at least 8 characters** and at most 72. Step 104
+generates a 20-character one, which is what you should actually use.
 
-*If you see* `user add: user "alice" already exists; use "goldencloud user
-passwd alice" to change their password`: pick a different name, or run the
-`user passwd` command it suggests.
+*If you see* `goldencloud: user add: the two passwords do not match`: nothing
+was created. Run the command again.
+
+*If you see* `goldencloud: user add: the password must be at least 8
+characters`: nothing was created either. Use a longer one.
+
+*If you see* `goldencloud: user add: user "alice" already exists; use
+"goldencloud user passwd alice" to change their password`: pick a different
+name, or run the `user passwd` command it suggests.
+
+*If you see* `goldencloud: user add: username "Alice" must be lowercase`:
+usernames are lower case only, and may use `a-z`, `0-9`, dot, dash and
+underscore, up to 32 characters.
 
 **104.** Choose their password properly. This is the password a staff member
 types into the tray app, and it is the only thing between the internet and
@@ -1696,7 +1716,8 @@ bob       unlimited  /mnt/wd/goldencloud/bob
 carol     unlimited  /mnt/wd/goldencloud/carol
 ```
 
-`-` in the quota column means no quota, which is the v1 behaviour — see
+`unlimited` in the quota column means no quota was set, which is the v1
+behaviour — quotas are reported but never enforced. See
 [`../ROADMAP.md`](../ROADMAP.md).
 
 **108.** Check the folders exist on the WD unit:
@@ -1743,15 +1764,21 @@ Type Alice's password when prompted.
 
 ```
 Enter host password for user 'alice':
-HTTP status: 200
+HTTP status: 405
 ```
 
-A `200`, `207`, or `405` all mean the sign-in **succeeded** — the server
-accepted the credentials and then answered the request in whatever way is
-correct for a directory. What matters is that it is not 401.
+**405 is the success condition here.** It means "Method Not Allowed": the
+server accepted the password, then declined to answer a plain browser-style
+`GET` for a folder, because a folder is not a file. A WebDAV client asks with
+`PROPFIND` instead and gets `207`. Any of `405`, `207` or `200` means the
+sign-in **succeeded**. What matters is that it is not 401.
 
 *If you see* `HTTP status: 401`: the password is wrong, or the reload in step 109
 did not happen. Try `sudo systemctl restart goldencloud` and repeat.
+
+*If you see* `HTTP status: 429`: you have typed the wrong password five times
+in a row and the server is deliberately slowing you down. Wait a minute and try
+again — see [`../docs/SECURITY.md`](../docs/SECURITY.md).
 
 **111.** Test that a **wrong** password is rejected:
 
@@ -1768,7 +1795,9 @@ HTTP status: 401
 
 **401 is the success condition here.** If this returns anything else, stop and
 raise an issue — authentication is not working and you must not publish the
-server.
+server. (`429` is not a failure: it means you have already made several wrong
+guesses and the rate limiter has kicked in. Wait a minute and run it once
+more.)
 
 > ### ✅ How to know it worked
 >
@@ -2129,7 +2158,7 @@ curl -sS -u alice -o /dev/null -w 'HTTP status: %{http_code}\n' https://cloud.yo
 
 Type Alice's password.
 
-*Expected output:* `HTTP status: 200` (or `207`, or `405` — see step 110).
+*Expected output:* `HTTP status: 405` (or `207`, or `200` — see step 110).
 
 > ### ✅ How to know it worked
 >
@@ -2314,11 +2343,12 @@ sudo journalctl -u goldencloud -n 50 --no-pager
 | Log says | Cause | Fix |
 | --- | --- | --- |
 | `Dependency failed for goldencloud.service` / `mnt-wd.mount` failed | The WD share is not mounted, and the unit correctly refuses to run without it. | See "the drive is empty" below. This is the guard doing its job. |
-| `yaml: line N: ...` | A syntax error in `config.yaml`. | `sudo nano /etc/goldencloud/config.yaml`, go to line N. Almost always a tab character or a missing quote. |
-| `storage root does not exist` | `storage_root` points somewhere that is not there. | `sudo mkdir -p /mnt/wd/goldencloud && sudo chown goldencloud:goldencloud /mnt/wd/goldencloud` |
-| `permission denied` opening a file | Ownership is wrong. | `sudo chown root:goldencloud /etc/goldencloud/*.yaml && sudo chmod 0640 /etc/goldencloud/*.yaml` |
-| `bind: address already in use` | Something else has port 8080. | `sudo ss -tlnp \| grep 8080` to see what. Stop it, or change the port in **both** config files. |
-| `refusing to listen on non-loopback address without TLS` | `listen` was changed to a non-loopback address. | This is a safety refusal, not a bug — see [`../DECISIONS.md`](../DECISIONS.md), D-003. Put it back to `127.0.0.1:8080`. |
+| `config.yaml: yaml: line N: ...` or `config.yaml: line N: <field>: ...` | A syntax error, an unknown key, or a bad value in `config.yaml`. The message names the line and the field. | `sudo nano /etc/goldencloud/config.yaml`, go to line N. Almost always a tab character, a missing quote, or a misspelled key — unknown keys are rejected, not ignored. |
+| `preflight check failed: storage_root /mnt/wd/goldencloud does not exist; create it, or check that the share is mounted` | `storage_root` points somewhere that is not there. | `sudo mkdir -p /mnt/wd/goldencloud && sudo chown goldencloud:goldencloud /mnt/wd/goldencloud` |
+| `users file: open /etc/goldencloud/users.yaml: no such file or directory` | The user database is missing. The server will not start without it, even to serve nobody. | `echo 'users: []' \| sudo tee /etc/goldencloud/users.yaml` then redo step 86. |
+| `config: open ...: permission denied` or `users file: open ...: permission denied` | Ownership is wrong. | `sudo chown root:goldencloud /etc/goldencloud/*.yaml && sudo chmod 0640 /etc/goldencloud/*.yaml` |
+| `cannot listen on 127.0.0.1:8080: listen tcp 127.0.0.1:8080: bind: address already in use` | Something else has port 8080. | `sudo ss -tlnp \| grep 8080` to see what. Stop it, or change the port in **both** config files. |
+| `refusing to start: "0.0.0.0:8080" is not a loopback address and neither tls.enabled nor trusted_proxy is set` | `listen` was changed to a non-loopback address. | This is a safety refusal, not a bug — see [`../DECISIONS.md`](../DECISIONS.md), D-003. Put it back to `127.0.0.1:8080`. |
 | Nothing at all in the log | The unit file is not installed or not loaded. | `sudo systemctl daemon-reload && sudo systemctl restart goldencloud` |
 
 If the service is stuck in a restart loop and systemd has given up
@@ -2378,10 +2408,11 @@ empty folder.
 | --- | --- |
 | Does the user exist? | `sudo goldencloud user list --config /etc/goldencloud/config.yaml` |
 | Is the username spelled right? | Usernames are case-sensitive. `Alice` is not `alice`. |
-| Does the password work at all? | `curl -sS -u alice -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/` on the Pi. 200/207/405 = fine, 401 = wrong password. |
+| Does the password work at all? | `curl -sS -u alice -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/` on the Pi. 405/207/200 = fine, 401 = wrong password, 429 = too many recent wrong ones. |
+| Have they been locked out by repeated failures? | Five wrong passwords in a row from one address start a backoff and the answer becomes `429`. Wait a minute; a single correct sign-in clears it. |
 | Did the server reload after you added them? | `sudo systemctl reload goldencloud` |
 | Is it just this one person? | If everybody is locked out, it is the server. If it is one person, it is their password. |
-| What does the log say? | `sudo journalctl -u goldencloud -f`, then have them try again and watch. |
+| What does the log say? | `sudo journalctl -u goldencloud -f`, then have them try again and watch for `msg="authentication failed"` or `msg="authentication rate limited"`. |
 
 To reset a password, see [section 17](#17-maintenance), M-3.
 
@@ -2547,6 +2578,18 @@ in. **It does not delete their files** — that is deliberate, so that "remove t
 leaver's access immediately" and "decide what to do with the leaver's files" are
 two separate decisions made at two different times.
 
+*Expected output:*
+
+```
+Removed user "dave".
+Their files were left in place at /mnt/wd/goldencloud/dave.
+Delete them yourself, or re-run with --delete-data.
+Reload the running server with: systemctl reload goldencloud
+```
+
+*If you see* `goldencloud: user remove: no such user "dave"`: nothing was
+changed. Check the spelling against `goldencloud user list`.
+
 **156.** Deal with their files when you are ready. Keep them:
 
 ```
@@ -2558,6 +2601,12 @@ Or, once you are certain, delete them:
 ```
 sudo rm -rf /mnt/wd/goldencloud/dave
 ```
+
+You can also do both in one go, if you were certain at the time of step 155:
+`sudo goldencloud user remove --config /etc/goldencloud/config.yaml
+--delete-data dave`. It says `Deleted /mnt/wd/goldencloud/dave and everything in
+it.` and there is no undo, which is why the two-step version above is the
+default advice.
 
 **157.** Confirm they cannot get back in:
 
@@ -2579,6 +2628,18 @@ sudo goldencloud user passwd --config /etc/goldencloud/config.yaml alice
 ```
 
 You are prompted for the new password twice. You do not need the old one.
+
+*Expected output:*
+
+```
+New password for alice:
+Repeat password:
+Password for "alice" changed.
+Reload the running server with: systemctl reload goldencloud
+```
+
+*If you see* `goldencloud: user passwd: no such user "alice"`: the name is
+wrong. Check it with `goldencloud user list`.
 
 **159.** Reload:
 
@@ -2696,8 +2757,8 @@ sudo journalctl -u goldencloud -p warning --no-pager
 # One user's activity
 sudo journalctl -u goldencloud --no-pager | grep alice
 
-# Failed sign-in attempts
-sudo journalctl -u goldencloud --no-pager | grep -i "401\|auth"
+# Failed sign-in attempts, and anyone the rate limiter is holding off
+sudo journalctl -u goldencloud --no-pager | grep -i "authentication"
 
 # The tunnel
 sudo journalctl -u cloudflared -n 100 --no-pager

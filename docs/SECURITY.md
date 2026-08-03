@@ -269,19 +269,28 @@ If the office is broken into and the NAS is carried out, the data goes with it.
 Mitigate with physical security, and with the WD unit's own encryption if your
 model offers it.
 
-**There is no audit log.** You can see requests in `journalctl` at
-`log_level: info`, but there is no tamper-evident, append-only record of who
+**There is no audit log.** You can see one line per request in `journalctl` —
+but only at `log_level: debug`, which is not the runbook's default and is too
+noisy to leave on. At `info` you get failed sign-ins and lifecycle messages and
+nothing else. Either way there is no tamper-evident, append-only record of who
 read or wrote which file. If you need to answer "did Alice open the payroll
 folder on 14 March", v1 cannot tell you. It is the second item on
 [`../ROADMAP.md`](../ROADMAP.md).
 
-**Sign-in attempts are rate limited.** After 5 consecutive failures for one
-client-IP-and-username pair, the server starts an exponential backoff — 1 second
-after the first failure past the threshold, doubling, capped at 5 minutes —
-answering `429 Too Many Requests` with a `Retry-After` header until the delay
-expires. A successful sign-in clears the counter, and requests that carry no
-credentials at all are never counted, so an unauthenticated `OPTIONS` probe from
-the Windows redirector cannot lock anybody out.
+**Sign-in attempts are rate limited.** The 5th consecutive failure for one
+client-IP-and-username pair starts an exponential backoff: 1 second, then 2, 4,
+8 and so on with each further failure, capped at 5 minutes. While the delay is
+running every request for that pair — *including one with the correct
+password* — is answered `429 Too Many Requests` with a `Retry-After` header
+giving the seconds remaining. Once the delay expires the correct password gets
+in again and clears the counter. A pair that goes quiet for 15 minutes is
+forgotten. Requests that carry no credentials at all are never counted, so an
+unauthenticated `OPTIONS` probe from the Windows redirector cannot lock anybody
+out.
+
+Failures are logged at `warn` as `msg="authentication failed"`, and refusals
+during a backoff as `msg="authentication rate limited"` with the remaining
+`retry_after`.
 
 Two limits worth knowing. The bucket is per IP *and* username, so an attacker
 spraying one password across many usernames from one address is slowed per

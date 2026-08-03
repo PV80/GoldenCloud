@@ -47,9 +47,9 @@
 #     server REFUSES TO START in this configuration unless you have explicitly
 #     enabled tls.enabled or trusted_proxy.enabled below — that refusal is a
 #     safety feature, not a bug (see DECISIONS.md, D-003).
-#   * A port already in use gives "listen tcp 127.0.0.1:8080: bind: address
-#     already in use" at startup. Pick another port and update the cloudflared
-#     ingress rule to match.
+#   * A port already in use gives "goldencloud: cannot listen on 127.0.0.1:8080:
+#     listen tcp 127.0.0.1:8080: bind: address already in use" at startup. Pick
+#     another port and update the cloudflared ingress rule to match.
 #
 # If you change the port, you MUST change it in cloudflared/config.yml too, or
 # the tunnel will connect to nothing and every request returns 502.
@@ -86,6 +86,33 @@ storage_root: "/mnt/wd/goldencloud"
 
 
 # -----------------------------------------------------------------------------
+# require_mountpoint — refuse to start unless storage_root is on its own
+# filesystem.
+# -----------------------------------------------------------------------------
+# Optional. Defaults to false, and the runbook leaves it out entirely.
+#
+# When true, the server checks at startup that storage_root lives on a
+# filesystem of its own rather than on the root filesystem, and refuses to start
+# if it does not:
+#
+#     goldencloud: preflight check failed: storage_root /mnt/wd/goldencloud is
+#     on the root filesystem, but require_mountpoint is set. The share is
+#     probably not mounted: writing here would put everyone's files on the local
+#     disk instead. ...
+#
+# It is an extra belt for operators who want one. It is off by default because
+# the systemd unit already hard-requires mnt-wd.mount, and because storage_root
+# is a sub-folder of the share rather than the share root, so an unmounted share
+# already fails the "storage_root does not exist" check above.
+#
+# Turn it ON if you are not using the supplied systemd unit — a container, a
+# hand-rolled init script, or a machine where nothing else guarantees the mount.
+# Leave it OFF if your storage really is a local directory, or the server will
+# never start.
+#require_mountpoint: false
+
+
+# -----------------------------------------------------------------------------
 # users_file — the user database.
 # -----------------------------------------------------------------------------
 # A YAML file holding, per user: username, bcrypt password hash, the name of
@@ -111,8 +138,13 @@ storage_root: "/mnt/wd/goldencloud"
 # be world-readable.
 #
 # What happens if you get this wrong:
-#   * A missing file is treated as "no users yet"; nobody can sign in and every
-#     request returns 401. Run `goldencloud user add` to create the first user.
+#   * A missing file stops the SERVER from starting at all, with
+#     "users file: open /etc/goldencloud/users.yaml: no such file or directory".
+#     That is deliberate: a path typo would otherwise look identical to "nobody
+#     has been created yet". Create an empty one with
+#     `echo 'users: []' | sudo tee /etc/goldencloud/users.yaml`.
+#     The `goldencloud user` commands are the exception — they treat a missing
+#     file as an empty list, so the very first `user add` works on a fresh box.
 #   * A file the server cannot read makes startup fail with a permission error.
 #   * Hand-editing it and breaking the YAML makes startup fail with a parse
 #     error naming the line. Restore from your backup copy.
@@ -124,14 +156,27 @@ users_file: "/etc/goldencloud/users.yaml"
 # -----------------------------------------------------------------------------
 # One of: debug, info, warn, error
 #
-#   error  Only things that are broken.
-#   warn   Plus things that are suspicious — failed sign-ins, rejected paths.
-#   info   Plus one line per request and the normal lifecycle messages.  <- use this
-#   debug  Plus internal detail. Very noisy. Turn it on only while chasing a
-#          specific problem, and turn it back down afterwards.
+#   error  Only things that are broken — a failed reload, a user folder that
+#          vanished, the server stopping unexpectedly.
+#   warn   Plus things that are suspicious: failed sign-ins, and clients the
+#          rate limiter is holding off.
+#   info   Plus the lifecycle messages — starting, storage root ok, loaded
+#          users, listening, reloading users, shutting down.            <- use this
+#   debug  Plus one line per WebDAV request (user, method, path, status, bytes,
+#          duration) and per handler error. Very noisy. Turn it on only while
+#          chasing a specific problem, and turn it back down afterwards.
+#
+# Note that per-request logging is a "debug" feature, not an "info" one. At
+# "info" the journal stays quiet unless something is wrong, which is what you
+# want on an SD card.
 #
 # Logs go to the systemd journal. Read them with:
 #     sudo journalctl -u goldencloud -f
+#
+# Every line is logfmt: a "time=" field, an upper-case "level=", a "msg=", then
+# named fields. For example:
+#     time=2026-08-03T11:12:44.187Z level=INFO msg=listening \
+#         addr=127.0.0.1:8080 tls=false trusted_proxy=false
 #
 # What happens if you get this wrong:
 #   * "debug" left on permanently will fill the journal and wear the SD card
@@ -160,10 +205,16 @@ log_level: "info"
 #              goldencloud user, and must NOT be world-readable.
 #
 # What happens if you get this wrong:
-#   * enabled: true with missing or unreadable files: the server refuses to
-#     start and names the file it could not open.
-#   * Certificate and key that do not match each other: startup fails with a
-#     "private key does not match public key" error.
+#   * enabled: true with cert_file or key_file left empty: the server refuses to
+#     start with "tls.cert_file: is required when tls.enabled is true", naming
+#     the line.
+#   * enabled: true with missing or unreadable files: the server logs its normal
+#     startup lines, binds the port, and THEN dies with
+#     "server stopped: open /path/to/cert.pem: no such file or directory". The
+#     certificate is not opened until the first byte is served, so this failure
+#     arrives one line after "listening" rather than before it.
+#   * Certificate and key that do not match each other: same shape, with
+#     "server stopped: tls: private key does not match public key".
 #   * An expired certificate does not stop the server, but every client will
 #     refuse to connect. Renewal is your job once you turn this on.
 tls:

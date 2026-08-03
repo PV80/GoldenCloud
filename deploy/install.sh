@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# GoldenCloud server installer — the shortcut for steps 61 to 91 of RUNBOOK.md.
+# GoldenCloud server installer — the shortcut for sections 8 to 11 (steps 75 to
+# 102) of RUNBOOK.md.
 #
 # What it does, idempotently (safe to run again after a failure or an upgrade):
 #
@@ -75,7 +76,7 @@ run() {
 }
 
 usage() {
-    sed -n '2,32p' "${BASH_SOURCE[0]}" | sed 's/^#\{0,1\} \{0,1\}//'
+    sed -n '2,33p' "${BASH_SOURCE[0]}" | sed 's/^#\{0,1\} \{0,1\}//'
     exit 0
 }
 
