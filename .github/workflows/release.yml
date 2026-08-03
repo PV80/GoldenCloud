@@ -32,7 +32,7 @@ jobs:
       - name: Determine version
         id: v
         shell: bash
-        run: echo "version=${GITHUB_REF_NAME:-${{ inputs.tag }}}" >> "$GITHUB_OUTPUT"
+        run: echo "version=${{ inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
       - name: Build
         working-directory: server
         env:
@@ -107,12 +107,12 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name || inputs.tag }}
+          tag_name: ${{ inputs.tag || github.ref_name }}
           draft: false
           generate_release_notes: true
           files: release/*
           body: |
-            ## GoldenCloud ${{ github.ref_name || inputs.tag }}
+            ## GoldenCloud ${{ inputs.tag || github.ref_name }}
 
             | Artefact | Install on |
             | --- | --- |
