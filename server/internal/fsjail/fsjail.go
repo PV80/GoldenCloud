@@ -12,7 +12,8 @@
 // normalised and validated before they are handed to os.Root, so that inputs
 // which cannot be part of a legitimate filename (NUL bytes, backslash
 // separators, NTFS alternate-data-stream colons, over-long components) are
-// rejected outright rather than silently reinterpreted.
+// rejected outright rather than silently reinterpreted (see DECISIONS.md,
+// D-023).
 package fsjail
 
 import (

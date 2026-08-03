@@ -513,3 +513,93 @@ func TestForwardedHeaderIgnoredWithoutTrustedCIDRs(t *testing.T) {
 		t.Fatalf("second with a different forged header = %d, want 429", got)
 	}
 }
+
+func TestCredentialCacheSkipsBcryptOnRepeatSuccess(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, auth.Options{})
+	// Prime the cache.
+	f.do(t, "alice", "alice-secret", true).Body.Close()
+
+	start := time.Now()
+	const n = 20
+	for i := 0; i < n; i++ {
+		r := f.do(t, "alice", "alice-secret", true)
+		code := r.StatusCode
+		r.Body.Close()
+		if code != http.StatusOK {
+			t.Fatalf("request %d = %d", i, code)
+		}
+	}
+	perRequest := time.Since(start) / n
+	t.Logf("cached credential: %v per request", perRequest)
+	if perRequest > 5*time.Millisecond {
+		t.Fatalf("a cached credential still costs %v per request; bcrypt is not being skipped", perRequest)
+	}
+}
+
+func TestCredentialCacheNeverCachesFailures(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, auth.Options{FailureThreshold: 1 << 30})
+	for i := 0; i < 3; i++ {
+		r := f.do(t, "alice", "wrong-password", true)
+		code := r.StatusCode
+		r.Body.Close()
+		if code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d = %d, want 401", i, code)
+		}
+	}
+	// And a correct password is still accepted afterwards.
+	r := f.do(t, "alice", "alice-secret", true)
+	defer r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("correct password after failures = %d", r.StatusCode)
+	}
+}
+
+func TestCredentialCacheInvalidatedByPasswordChange(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, auth.Options{})
+	f.do(t, "alice", "alice-secret", true).Body.Close()
+
+	f.store.Replace([]config.User{
+		{Username: "alice", PasswordHash: hash(t, "a-new-secret"), Root: "alice"},
+	})
+	r := f.do(t, "alice", "alice-secret", true)
+	code := r.StatusCode
+	r.Body.Close()
+	if code != http.StatusUnauthorized {
+		t.Fatalf("the old password still works after the hash changed: %d", code)
+	}
+	r = f.do(t, "alice", "a-new-secret", true)
+	defer r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("the new password = %d", r.StatusCode)
+	}
+}
+
+func TestCredentialCacheExpires(t *testing.T) {
+	t.Parallel()
+	clock := &fakeClock{t: time.Now()}
+	f := newFixture(t, auth.Options{Now: clock.Now, CredentialCacheTTL: time.Minute})
+	f.do(t, "alice", "alice-secret", true).Body.Close()
+	clock.advance(2 * time.Minute)
+	// Still correct, just slower: the entry has expired and bcrypt runs again.
+	r := f.do(t, "alice", "alice-secret", true)
+	defer r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("after cache expiry = %d", r.StatusCode)
+	}
+}
+
+func TestCredentialCacheCanBeDisabled(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, auth.Options{CredentialCacheTTL: -1})
+	for i := 0; i < 2; i++ {
+		r := f.do(t, "alice", "alice-secret", true)
+		code := r.StatusCode
+		r.Body.Close()
+		if code != http.StatusOK {
+			t.Fatalf("request %d = %d", i, code)
+		}
+	}
+}

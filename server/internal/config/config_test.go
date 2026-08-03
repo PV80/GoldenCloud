@@ -35,7 +35,7 @@ func TestLoadServerDefaults(t *testing.T) {
 		t.Errorf("LogLevel = %q, want info", c.LogLevel)
 	}
 	if c.RequireMountpoint {
-		t.Errorf("RequireMountpoint = true, want false by default (D-014)")
+		t.Errorf("RequireMountpoint = true, want false by default (D-022)")
 	}
 	if c.TLS.Enabled || c.TrustedProxy.Enabled {
 		t.Errorf("TLS/TrustedProxy should default to false")

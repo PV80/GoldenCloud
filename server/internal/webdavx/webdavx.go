@@ -36,7 +36,7 @@ const davCompliance = "1, 2, 3"
 const allowedMethods = "OPTIONS, GET, HEAD, POST, PUT, DELETE, TRACE, COPY, MOVE, MKCOL, PROPFIND, PROPPATCH, LOCK, UNLOCK"
 
 // propfindFiniteDepth is the RFC 4918 §9.1 error body returned when a client
-// asks for Depth: infinity. See DECISIONS.md, D-009.
+// asks for Depth: infinity. See DECISIONS.md, D-019.
 const propfindFiniteDepth = xml.Header + `<D:error xmlns:D="DAV:"><D:propfind-finite-depth/></D:error>` + "\n"
 
 // Options configures a Server.
@@ -122,7 +122,7 @@ func setDAVHeaders(h http.Header) {
 }
 
 func (s *Server) serve(w http.ResponseWriter, r *http.Request, user config.User) {
-	// D-009: bound PROPFIND. An unbounded Depth: infinity walk over a large
+	// D-019: bound PROPFIND. An unbounded Depth: infinity walk over a large
 	// share is a denial of service against a Raspberry Pi, and RFC 4918 §9.1
 	// explicitly allows refusing it.
 	if r.Method == "PROPFIND" {

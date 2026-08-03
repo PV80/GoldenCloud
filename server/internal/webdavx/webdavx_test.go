@@ -197,7 +197,7 @@ func TestTranslateHeaderIsTolerated(t *testing.T) {
 	}
 }
 
-// D-009: PROPFIND with Depth: infinity is refused, per RFC 4918 §9.1, rather
+// D-019: PROPFIND with Depth: infinity is refused, per RFC 4918 §9.1, rather
 // than walking an arbitrarily large tree on a Raspberry Pi.
 func TestPropfindDepthInfinityIsRefused(t *testing.T) {
 	t.Parallel()

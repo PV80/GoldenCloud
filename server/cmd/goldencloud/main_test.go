@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,7 +11,9 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/PV80/GoldenCloud/server/internal/auth"
 	"github.com/PV80/GoldenCloud/server/internal/config"
+	"github.com/PV80/GoldenCloud/server/internal/webdavx"
 )
 
 // TestMain turns the bcrypt work factor down for the suite. Hashing a dozen
@@ -410,7 +414,7 @@ func TestPreflightStorageRootIsAFile(t *testing.T) {
 	}
 }
 
-// D-008/D-014: when require_mountpoint is set and the storage lives on the root
+// D-008/D-022: when require_mountpoint is set and the storage lives on the root
 // filesystem, the share is not mounted and the server must refuse to start
 // rather than silently fill the local disk.
 func TestPreflightRequiresMountpoint(t *testing.T) {
@@ -539,4 +543,197 @@ func TestServeRejectsMissingConfig(t *testing.T) {
 	if r.code == 0 {
 		t.Fatal("serve started without a config file")
 	}
+}
+
+// --- serve internals ------------------------------------------------------------
+
+func TestReloadPicksUpNewUsers(t *testing.T) {
+	t.Parallel()
+	cfgPath, storage := newTree(t)
+	cli(t, "hunter2hunter2\n", "user", "add", "alice", "--config", cfgPath, "--password-stdin")
+
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	users, err := config.LoadUsers(cfg.UsersFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := auth.NewStore(users)
+	dav := webdavx.New(webdavx.Options{StorageRoot: storage, Logger: quietLogger()})
+	defer dav.Close()
+
+	cli(t, "hunter2hunter2\n", "user", "add", "bob", "--config", cfgPath, "--password-stdin")
+	if err := reload(cfg, store, dav, quietLogger()); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if n := len(store.Users()); n != 2 {
+		t.Fatalf("store has %d users after reload, want 2", n)
+	}
+	if _, ok := store.Lookup("bob"); !ok {
+		t.Fatal("bob is missing after reload")
+	}
+
+	cli(t, "", "user", "remove", "alice", "--config", cfgPath)
+	if err := reload(cfg, store, dav, quietLogger()); err != nil {
+		t.Fatalf("reload after remove: %v", err)
+	}
+	if _, ok := store.Lookup("alice"); ok {
+		t.Fatal("alice survived a reload after being removed")
+	}
+}
+
+func TestReloadRejectsABrokenUsersFile(t *testing.T) {
+	t.Parallel()
+	cfgPath, storage := newTree(t)
+	cli(t, "hunter2hunter2\n", "user", "add", "alice", "--config", cfgPath, "--password-stdin")
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	users, err := config.LoadUsers(cfg.UsersFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := auth.NewStore(users)
+	dav := webdavx.New(webdavx.Options{StorageRoot: storage, Logger: quietLogger()})
+	defer dav.Close()
+
+	if err := os.WriteFile(cfg.UsersFile, []byte("users:\n  - username: alice\n    password_hash: hunter2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := reload(cfg, store, dav, quietLogger()); err == nil {
+		t.Fatal("reload accepted a users.yaml with a plaintext password")
+	}
+	// The previous list must still be serving.
+	if _, ok := store.Lookup("alice"); !ok {
+		t.Fatal("a failed reload dropped the working user list")
+	}
+}
+
+func TestParsePrefixes(t *testing.T) {
+	t.Parallel()
+	got, err := parsePrefixes([]string{"127.0.0.1/32", "10.0.0.0/8", "::1/128"})
+	if err != nil {
+		t.Fatalf("parsePrefixes: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d prefixes", len(got))
+	}
+	if _, err := parsePrefixes([]string{"not-a-cidr"}); err == nil {
+		t.Fatal("parsePrefixes accepted a non-CIDR")
+	}
+}
+
+func TestNewLoggerLevels(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		level string
+		debug bool
+	}{
+		{"debug", true}, {"info", false}, {"warn", false}, {"error", false}, {"nonsense", false},
+	} {
+		var buf bytes.Buffer
+		log := newLogger(streams{err: &buf}, tc.level)
+		log.Debug("a debug line")
+		if got := strings.Contains(buf.String(), "a debug line"); got != tc.debug {
+			t.Errorf("level %q: debug logged = %v, want %v", tc.level, got, tc.debug)
+		}
+	}
+}
+
+func TestCheckPassword(t *testing.T) {
+	t.Parallel()
+	if err := checkPassword([]byte("shorty")); err == nil {
+		t.Error("a 6-character password was accepted")
+	}
+	if err := checkPassword(bytes.Repeat([]byte("x"), 73)); err == nil {
+		t.Error("a 73-byte password was accepted; bcrypt would silently truncate it")
+	}
+	if err := checkPassword([]byte("long-enough-password")); err != nil {
+		t.Errorf("a good password was rejected: %v", err)
+	}
+}
+
+func TestUnescapeMountinfo(t *testing.T) {
+	t.Parallel()
+	for in, want := range map[string]string{
+		"/mnt/wd":            "/mnt/wd",
+		`/mnt/my\040share`:   "/mnt/my share",
+		`/mnt/a\011b`:        "/mnt/a\tb",
+		`/mnt/back\134slash`: `/mnt/back\slash`,
+		`/mnt/trailing\`:     `/mnt/trailing\`,
+		`/mnt/bad\99x`:       `/mnt/bad\99x`,
+		`/a\040b\040c`:       "/a b c",
+	} {
+		if got := unescapeMountinfo(in); got != want {
+			t.Errorf("unescapeMountinfo(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestDifferentDeviceFromParent(t *testing.T) {
+	t.Parallel()
+	diff, err := differentDeviceFromParent(t.TempDir())
+	if err != nil {
+		t.Fatalf("differentDeviceFromParent: %v", err)
+	}
+	if diff {
+		t.Skip("this machine's temp directory is its own filesystem")
+	}
+	if _, err := differentDeviceFromParent(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("differentDeviceFromParent succeeded on a missing path")
+	}
+}
+
+func TestEnsureUserDirRejectsAFile(t *testing.T) {
+	t.Parallel()
+	p := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureUserDir(p); err == nil {
+		t.Fatal("ensureUserDir accepted a regular file")
+	}
+}
+
+func TestUserSubcommandErrors(t *testing.T) {
+	t.Parallel()
+	cfg, _ := newTree(t)
+	for _, args := range [][]string{
+		{"user"},
+		{"user", "frobnicate"},
+		{"user", "passwd", "--config", cfg},
+		{"user", "remove", "--config", cfg},
+		{"user", "add", "a", "b", "--config", cfg},
+	} {
+		r := cli(t, "", args...)
+		if r.code == 0 {
+			t.Errorf("%v exited 0", args)
+		}
+		if r.stderr == "" {
+			t.Errorf("%v said nothing on stderr", args)
+		}
+	}
+}
+
+func TestUserCommandsWithAnUnreadableConfig(t *testing.T) {
+	t.Parallel()
+	missing := filepath.Join(t.TempDir(), "nope.yaml")
+	for _, args := range [][]string{
+		{"user", "list", "--config", missing},
+		{"user", "add", "alice", "--password-stdin", "--config", missing},
+		{"user", "remove", "alice", "--config", missing},
+		{"user", "passwd", "alice", "--password-stdin", "--config", missing},
+	} {
+		r := cli(t, "hunter2hunter2\n", args...)
+		if r.code == 0 {
+			t.Errorf("%v exited 0 with a missing config", args)
+		}
+	}
+}
+
+func quietLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }

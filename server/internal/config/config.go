@@ -75,7 +75,7 @@ type Config struct {
 	LogLevel string `yaml:"log_level"`
 	// RequireMountpoint makes the server refuse to start unless StorageRoot
 	// lives on a filesystem of its own rather than on the root filesystem.
-	// See D-008 and D-014.
+	// See D-008 and D-022.
 	RequireMountpoint bool `yaml:"require_mountpoint"`
 	// TrustedProxy configures a reverse proxy in front of the server.
 	TrustedProxy TrustedProxy `yaml:"trusted_proxy"`
@@ -120,7 +120,7 @@ func Load(configPath string) (*Config, error) {
 		Listen:   DefaultListen,
 		LogLevel: DefaultLogLevel,
 		Path:     configPath,
-		// D-014: default off. The systemd unit hard-requires the mount unit
+		// D-022: default off. The systemd unit hard-requires the mount unit
 		// (D-011), and with storage_root a sub-folder of the mount (D-010) an
 		// unmounted share already fails the "storage_root does not exist"
 		// check. Requiring a dedicated filesystem is an extra belt for

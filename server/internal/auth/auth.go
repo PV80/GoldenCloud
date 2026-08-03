@@ -16,6 +16,9 @@ package auth
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"log/slog"
@@ -130,6 +133,11 @@ type Options struct {
 	// DummyHash is compared against when the username is unknown, to equalise
 	// response time. It must have the same bcrypt cost as real passwords.
 	DummyHash []byte
+	// CredentialCacheTTL is how long a *successful* verification is remembered
+	// so that the next request from the same client does not pay for bcrypt
+	// again. Zero selects defaultCredentialCacheTTL; negative disables the
+	// cache. Failures are never cached.
+	CredentialCacheTTL time.Duration
 	// Now is the clock, for tests.
 	Now func() time.Time
 	// Logger receives authentication failures. Defaults to slog.Default().
@@ -146,6 +154,14 @@ const (
 	// maxTrackedClients bounds the backoff table so a flood of distinct
 	// usernames cannot exhaust memory.
 	maxTrackedClients = 8192
+	// defaultCredentialCacheTTL is how long a verified credential is trusted
+	// without re-running bcrypt. WebDAV sends the Authorization header on every
+	// request and a file manager makes dozens per user action; at cost 12 on a
+	// Raspberry Pi that is a quarter of a second each, which would make the
+	// drive feel broken. See DECISIONS.md, D-021.
+	defaultCredentialCacheTTL = 5 * time.Minute
+	// maxCachedCredentials bounds the cache.
+	maxCachedCredentials = 4096
 )
 
 // Authenticator is the HTTP Basic middleware.
@@ -155,6 +171,14 @@ type Authenticator struct {
 
 	mu       sync.Mutex
 	failures map[string]*failureState
+
+	// cacheKey keys the HMAC used to index the credential cache. It is random
+	// per process, so the cache never holds anything derived from a password
+	// that would survive a core dump in a useful form, and two processes never
+	// share an index.
+	cacheKey [32]byte
+	cacheMu  sync.Mutex
+	cache    map[string]time.Time
 }
 
 type failureState struct {
@@ -189,7 +213,21 @@ func New(store *Store, opt Options) *Authenticator {
 	if opt.Logger == nil {
 		opt.Logger = slog.Default()
 	}
-	return &Authenticator{store: store, opt: opt, failures: map[string]*failureState{}}
+	if opt.CredentialCacheTTL == 0 {
+		opt.CredentialCacheTTL = defaultCredentialCacheTTL
+	}
+	a := &Authenticator{
+		store:    store,
+		opt:      opt,
+		failures: map[string]*failureState{},
+		cache:    map[string]time.Time{},
+	}
+	if _, err := rand.Read(a.cacheKey[:]); err != nil {
+		// Without a random key the cache index would be predictable. Rather
+		// than degrade silently, run without a cache.
+		a.opt.CredentialCacheTTL = -1
+	}
+	return a
 }
 
 // Wrap returns a handler that authenticates before delegating to next.
@@ -233,6 +271,17 @@ func (a *Authenticator) Authenticate(w http.ResponseWriter, r *http.Request) (co
 		// not disclose whether the username exists.
 		hash = a.opt.DummyHash
 	}
+
+	// A credential that verified recently is trusted without re-running
+	// bcrypt. The cache index binds the username, the *stored hash* and the
+	// offered password together, so changing a password in users.yaml
+	// invalidates every cached entry for that user immediately.
+	ck := a.credentialKey(username, u.PasswordHash, password)
+	if known && a.cachedRecently(ck) {
+		a.recordSuccess(key)
+		return u, true
+	}
+
 	err := bcrypt.CompareHashAndPassword(hash, []byte(password))
 	if !known || err != nil {
 		a.recordFailure(key)
@@ -244,7 +293,66 @@ func (a *Authenticator) Authenticate(w http.ResponseWriter, r *http.Request) (co
 	}
 
 	a.recordSuccess(key)
+	a.cacheCredential(ck)
 	return u, true
+}
+
+// credentialKey indexes the credential cache. It is an HMAC over the username,
+// the stored bcrypt hash and the offered password, keyed by a per-process
+// random value, so the cache stores no password material that is useful
+// anywhere else and cannot be probed by an attacker who can guess usernames.
+func (a *Authenticator) credentialKey(username, storedHash, password string) string {
+	if a.opt.CredentialCacheTTL < 0 {
+		return ""
+	}
+	mac := hmac.New(sha256.New, a.cacheKey[:])
+	mac.Write([]byte(username))
+	mac.Write([]byte{0})
+	mac.Write([]byte(storedHash))
+	mac.Write([]byte{0})
+	mac.Write([]byte(password))
+	return string(mac.Sum(nil))
+}
+
+func (a *Authenticator) cachedRecently(key string) bool {
+	if key == "" {
+		return false
+	}
+	now := a.opt.Now()
+	a.cacheMu.Lock()
+	defer a.cacheMu.Unlock()
+	exp, ok := a.cache[key]
+	if !ok {
+		return false
+	}
+	if now.After(exp) {
+		delete(a.cache, key)
+		return false
+	}
+	return true
+}
+
+func (a *Authenticator) cacheCredential(key string) {
+	if key == "" {
+		return
+	}
+	now := a.opt.Now()
+	a.cacheMu.Lock()
+	defer a.cacheMu.Unlock()
+	if len(a.cache) >= maxCachedCredentials {
+		for k, exp := range a.cache {
+			if now.After(exp) {
+				delete(a.cache, k)
+			}
+		}
+		for k := range a.cache {
+			if len(a.cache) < maxCachedCredentials {
+				break
+			}
+			delete(a.cache, k)
+		}
+	}
+	a.cache[key] = now.Add(a.opt.CredentialCacheTTL)
 }
 
 // challenge writes the single, uniform rejection. Every failure path uses it,

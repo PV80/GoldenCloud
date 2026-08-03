@@ -22,6 +22,7 @@ const tokenScheme = "opaquelocktoken:"
 // Giving every user's lock system a random prefix removes the collision, and
 // rejecting a token that does not carry this instance's prefix means a token
 // belonging to another user is not merely useless but explicitly refused.
+// See DECISIONS.md, D-020.
 type scopedLS struct {
 	inner  webdav.LockSystem
 	prefix string
