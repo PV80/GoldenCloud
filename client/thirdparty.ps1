@@ -125,12 +125,33 @@ function Initialize-GoldenCloudThirdParty {
 
     # ---- rclone ----------------------------------------------------------
     $rclonePath = Join-Path $paths.ThirdPartyDir $pins.rclone.target
+    # The pin covers the downloaded zip, not the extracted exe, so a cached exe
+    # cannot be checked against the pin directly. At extraction time a sidecar
+    # records the exe's own hash and the zip pin it came from; a later build
+    # re-verifies against the sidecar and re-downloads on any disagreement —
+    # a bumped pin, a truncated file, or a swapped binary. No sidecar, no trust.
+    $rcloneSidecar = "$rclonePath.verified"
+
+    $rcloneCacheOk = $false
+    if (-not $Force -and (Test-Path -LiteralPath $rclonePath) -and (Test-Path -LiteralPath $rcloneSidecar)) {
+        $recorded = Get-Content -LiteralPath $rcloneSidecar | ConvertFrom-Json
+        $exeHash = (Get-FileHash -LiteralPath $rclonePath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($recorded.zipSha256 -eq $pins.rclone.sha256.Trim().ToLowerInvariant() -and
+            $recorded.exeSha256 -eq $exeHash) {
+            Write-Host "rclone: already present, sha256 verified against the recorded extraction"
+            $rcloneCacheOk = $true
+        }
+        else {
+            Write-GcWarning "rclone: cached rclone.exe does not match its recorded verification; re-downloading."
+        }
+    }
 
     if ($env:GOLDENCLOUD_RCLONE_EXE -and (Test-Path -LiteralPath $env:GOLDENCLOUD_RCLONE_EXE)) {
         Write-Host "rclone: using local override $($env:GOLDENCLOUD_RCLONE_EXE)"
         Copy-Item -LiteralPath $env:GOLDENCLOUD_RCLONE_EXE -Destination $rclonePath -Force
+        Remove-Item -LiteralPath $rcloneSidecar -ErrorAction SilentlyContinue
     }
-    elseif ($Force -or -not (Test-Path -LiteralPath $rclonePath)) {
+    elseif (-not $rcloneCacheOk) {
         Write-Host "rclone $($pins.rclone.version):"
         $zip = Join-Path $paths.ThirdPartyDir "rclone-$($pins.rclone.version).zip"
         Invoke-GcDownload -Url $pins.rclone.url -Destination $zip
@@ -158,9 +179,11 @@ function Initialize-GoldenCloudThirdParty {
 
         Remove-Item -LiteralPath $extractDir -Recurse -Force
         Remove-Item -LiteralPath $zip -Force
-    }
-    else {
-        Write-Host "rclone: already present"
+
+        [pscustomobject]@{
+            zipSha256 = $pins.rclone.sha256.Trim().ToLowerInvariant()
+            exeSha256 = (Get-FileHash -LiteralPath $rclonePath -Algorithm SHA256).Hash.ToLowerInvariant()
+        } | ConvertTo-Json | Out-File -Encoding ascii $rcloneSidecar
     }
 
     if (-not (Test-Path -LiteralPath $rclonePath)) {
@@ -170,17 +193,28 @@ function Initialize-GoldenCloudThirdParty {
     # ---- WinFsp ----------------------------------------------------------
     $winfspPath = Join-Path $paths.ThirdPartyDir $pins.winfsp.target
 
+    # The pin covers the MSI itself, so a cached copy is simply re-hashed; a
+    # mismatch (bumped pin, corrupted or swapped file) triggers a re-download.
+    $winfspCacheOk = $false
+    if (-not $Force -and (Test-Path -LiteralPath $winfspPath)) {
+        $msiHash = (Get-FileHash -LiteralPath $winfspPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($msiHash -eq $pins.winfsp.sha256.Trim().ToLowerInvariant()) {
+            Write-Host "WinFsp: already present, sha256 verified"
+            $winfspCacheOk = $true
+        }
+        else {
+            Write-GcWarning "WinFsp: cached winfsp.msi does not match its pin; re-downloading."
+        }
+    }
+
     if ($env:GOLDENCLOUD_WINFSP_MSI -and (Test-Path -LiteralPath $env:GOLDENCLOUD_WINFSP_MSI)) {
         Write-Host "WinFsp: using local override $($env:GOLDENCLOUD_WINFSP_MSI)"
         Copy-Item -LiteralPath $env:GOLDENCLOUD_WINFSP_MSI -Destination $winfspPath -Force
     }
-    elseif ($Force -or -not (Test-Path -LiteralPath $winfspPath)) {
+    elseif (-not $winfspCacheOk) {
         Write-Host "WinFsp $($pins.winfsp.version):"
         Invoke-GcDownload -Url $pins.winfsp.url -Destination $winfspPath
         Test-GcHash -Path $winfspPath -Expected $pins.winfsp.sha256 -Name "WinFsp $($pins.winfsp.version)" | Out-Null
-    }
-    else {
-        Write-Host "WinFsp: already present"
     }
 
     if (-not (Test-Path -LiteralPath $winfspPath)) {
