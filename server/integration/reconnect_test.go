@@ -55,9 +55,17 @@ func TestReconnectMidTransfer(t *testing.T) {
 		for i := 0; i < rounds; i++ {
 			abortUpload(t, s, "/contended.txt")
 		}
-		code, token := c.lock("/contended.txt")
+		// abortUpload sends a RST and returns without waiting, so the handler
+		// for the final abort may still be running its deferred release of the
+		// temporary per-request PUT lock when we get here. That release is
+		// asynchronous to us, so a single immediate LOCK can race it and see a
+		// transient 423. A genuine leak, by contrast, never clears — so poll for
+		// a short window and only fail if the path stays locked, which is the
+		// real property under test. (Same async-teardown tolerance settledFDs
+		// already applies to the descriptor count.)
+		code, token := lockUntilFree(t, c, "/contended.txt", 5*time.Second)
 		if code != http.StatusOK && code != http.StatusCreated {
-			t.Fatalf("LOCK after aborted uploads = %d — a lock was leaked", code)
+			t.Fatalf("LOCK still refused (%d) 5s after aborted uploads — a lock was genuinely leaked", code)
 		}
 		if code := c.unlock("/contended.txt", token); code != http.StatusNoContent {
 			t.Fatalf("UNLOCK = %d", code)
@@ -117,6 +125,27 @@ func TestReconnectMidTransfer(t *testing.T) {
 			t.Fatalf("the server did not shut down gracefully:\n%s", log)
 		}
 	})
+}
+
+// lockUntilFree tries to LOCK a path until it succeeds or the window expires.
+// It exists to tolerate the brief interval in which a just-aborted request's
+// temporary lock is still being released; a permanent leak never clears and so
+// still fails the caller. It returns the last status and, on success, the token.
+func lockUntilFree(t *testing.T, c *davClient, path string, within time.Duration) (int, string) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	var code int
+	var token string
+	for {
+		code, token = c.lock(path)
+		if code == http.StatusOK || code == http.StatusCreated {
+			return code, token
+		}
+		if time.Now().After(deadline) {
+			return code, token
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
 }
 
 // abortUpload announces a large body, sends a fraction of it, and then resets
