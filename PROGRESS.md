@@ -1,5 +1,30 @@
 # Progress
 
+## Independent audit (Fable, second pass)
+
+A separate review re-read the security-critical code and re-ran everything from a
+clean build rather than trusting the first pass's reported numbers. Findings:
+
+- **`fsjail`, `webdavx`, `auth`, config validation, and the isolation test are
+  sound.** The isolation test is genuinely strong — it checks both the wire
+  response and the on-disk side effect across 33 traversal encodings, and the
+  harness sends raw paths via `URL.Opaque` so the server really sees them.
+- **The credential cache and the dummy-hash timing defence hold up** — verified
+  the dummy hash is valid cost-12 bcrypt (299 ms compare, no username-existence
+  timing leak) and that the cache cannot be poisoned or bypassed.
+- **The managed rclone obscurer is byte-compatible with rclone** — confirmed
+  against an independent Go (crypto/cipher) reference; output identical.
+- **One real defect found and fixed:** `TestReconnectMidTransfer/upload_aborted_
+  on_a_locked_path` was **flaky**. It failed on the audit machine though the
+  first pass and CI reported it green. Direct probing proved the product does
+  **not** leak locks (a transient post-abort `423` clears in ~50 ms; 0 permanent
+  leaks in 6 rounds) — the test asserted an immediate LOCK with no tolerance for
+  the async release of the temporary PUT lock. Fixed the test to poll; 8/8
+  full-suite runs green after. Commit `786ff65`.
+
+Net: the server is trustworthy and now the reliability suite is too. The client's
+untested Windows-only *runtime* behaviour (below) remains the honest open item.
+
 ## ⚠️ Human action gates
 
 Two things cannot be done without you. Everything else is built and green
