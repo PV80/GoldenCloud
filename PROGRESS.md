@@ -1,21 +1,28 @@
 # Progress
 
-## ⛔ Deployment blocker: Cloudflare's 100 MB upload cap
+## ✅ Resolved: Cloudflare's 100 MB upload cap (was the deployment blocker)
 
 An external review found the one thing neither the build nor the internal audit
 caught, because no automated test crosses Cloudflare: **Cloudflare caps proxied
-request bodies at 100 MB on Free/Pro plans (200 MB Business), answering 413
-above it, and this applies to Tunnel traffic.** rclone's generic WebDAV backend
-uploads each file as a single PUT, so through the tunnel any upload over the
-cap fails. Downloads are unaffected; the office LAN is unaffected; the 1 GB
-integration test is real but connects directly to the server.
+request bodies at 100 MB on Free/Pro plans, answering 413 above it, and this
+applies to Tunnel traffic.** rclone's generic WebDAV backend uploads each file
+as a single PUT, so through the tunnel any upload over the cap failed.
 
-**Consequence:** the "multi-GB files from anywhere" promise holds for
-downloads but not uploads until an architectural choice is made. The options —
-client-side rclone chunking, carrying the drive over a raw-TCP tunnel, or a
-paid Cloudflare plan — are laid out in `DECISIONS.md` D-024. **Do not hand this
-to staff whose workflow uploads files over 100 MB remotely until one is
-picked.** The runbook's tunnel section carries the same warning.
+**Resolution (owner's directive: "No payments" → D-028).** The Windows client
+now mounts an rclone **chunker overlay**: files over 95 MiB upload as parts of
+at most 99,614,720 bytes — under the cap — and reassemble transparently on
+read. Verified end-to-end with the real rclone and the real server using
+exactly the environment the tray app generates: a 300 MB upload stored as four
+sub-cap chunks, round-tripped with an identical SHA-256, listed as a single
+file on the drive, left small files stored plain, read plain-WebDAV uploads
+back unchanged, and deleted cleanly. 136/136 client tests pass, including new
+assertions that pin the chunker wiring and the sub-cap chunk size.
+
+**Residual, documented, accepted:** non-app clients (macOS Finder, iOS Files,
+the no-WinFsp fallback) still cannot upload a single file over 100 MB through
+the tunnel, and see large files as parts. Parts are plain byte-splits —
+`cat name.rclone_chunk.* > name` reconstructs exactly, so no data is hostage
+to any tool. Documented in the runbook §13 and `OTHER-PLATFORMS.md`.
 
 ## Second external review — response ledger
 
@@ -23,7 +30,7 @@ Every finding from the external (ChatGPT) assessment, verified and dispositioned
 
 | Finding | Verdict | Action |
 | --- | --- | --- |
-| Cloudflare 100 MB upload cap breaks multi-GB remote uploads | **Valid — the most important finding** | Blocker recorded above; options in D-024; decision gate added |
+| Cloudflare 100 MB upload cap breaks multi-GB remote uploads | **Valid — the most important finding** | **Fixed** per owner's "no payments" directive: chunker overlay in the client, verified end-to-end (D-024, D-028) |
 | Release binaries embed a different commit than the tag | **Valid** (provenance; delta was docs-only) | Workflow now pins `github.sha` at checkout and mints the tag at the built commit (D-026) |
 | SIGHUP reload leaves a root-reassigned user on their old folder | **Valid — real bug** | Fixed: handler cache self-heals on root change; regression test added (D-025) |
 | Cached rclone/WinFsp binaries never re-verified | **Valid** | Fixed: MSI re-hashed every build; rclone exe verified via extraction sidecar; all four cache/tamper scenarios functionally tested under pwsh (D-027) |

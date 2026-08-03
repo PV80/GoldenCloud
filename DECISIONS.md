@@ -550,3 +550,36 @@ rclone, extraction writes a sidecar recording the exe's own hash and the zip
 pin it came from; later builds verify both and re-download on any mismatch.
 Behaviour verified functionally (fresh, cached, tampered-exe, tampered-msi
 scenarios) under PowerShell 7 before commit.
+
+### D-028 — The 100 MB cap is defeated with rclone's chunker overlay, client-side
+
+**Context.** D-024 laid out three ways past Cloudflare's 100 MB proxied-upload
+cap. The project owner's directive was two words: **"No payments."** That
+eliminates the paid plans, and between the two free options the chunker beats
+the raw-TCP tunnel on every axis that matters here: no second bundled binary,
+no extra supervised process on every staff PC, no Cloudflare Zero Trust
+configuration in a runbook aimed at a first-time Linux user, and no change to
+the server at all.
+
+**Decision.** The tray app mounts `gcdrive:` — an rclone `chunker` remote
+wrapping the WebDAV remote — with `chunk_size=95Mi` (99,614,720 bytes, safely
+under the 100,000,000-byte cap) and `fail_hard=true` so a missing chunk is a
+loud error rather than a silently truncated file. Both remotes are defined
+purely through `RCLONE_CONFIG_*` environment variables: still no rclone.conf,
+and the password still never touches an argument (D-006).
+
+**Verified end-to-end** with the real rclone 1.68.2 and the real server binary,
+using exactly the environment the builder generates: a 300 MB upload stored as
+four chunks of ≤ 99,614,720 bytes plus a 79-byte metadata object; the download
+round-tripped with an identical SHA-256; the mounted listing showed one 300 MB
+file, not parts; a ≤ 95 MiB file was stored as a plain single file; a file
+uploaded by plain WebDAV read back unchanged through the chunker; and a delete
+removed every chunk.
+
+**Consequence.** Staff on the Windows app get genuinely unlimited file sizes
+through the tunnel. The accepted trade-offs: non-rclone clients (macOS Finder,
+iOS Files, the no-WinFsp fallback) see chunk parts for large files and remain
+subject to the 100 MB cap for their own uploads — documented in
+`OTHER-PLATFORMS.md` and the runbook — and large files on the WD share itself
+are stored as parts. The parts are plain byte-splits (`cat parts > file`
+reconstructs exactly), so no data is ever hostage to rclone or GoldenCloud.

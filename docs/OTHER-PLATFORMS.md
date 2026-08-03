@@ -138,6 +138,16 @@ not be asked for the password again unless it changes.
 - **Deletes are immediate.** There is no Recycle Bin or Trash on the server. If
   you delete something you needed, tell whoever runs the server straight away —
   it may be recoverable from a backup, but only if they know quickly.
+- **Large files have two quirks on these platforms.** First, files that a
+  Windows colleague stored through the GoldenCloud app may appear here as a
+  set of numbered parts (`report.mp4.rclone_chunk.001`, `.002`, …) rather than
+  one file — that is how the app fits big uploads under Cloudflare's per-upload
+  cap. Leave the parts alone; on Windows the file looks and works normally. If
+  you genuinely need such a file on a Mac, joining the parts in numeric order
+  reconstructs it exactly (Terminal: `cat report.mp4.rclone_chunk.* > report.mp4`).
+  Second, **uploading** a single file larger than 100 MB from Finder or the
+  Files app fails with an error — Cloudflare refuses uploads that size outside
+  the Windows app. Downloads of any size work everywhere.
 
 ---
 

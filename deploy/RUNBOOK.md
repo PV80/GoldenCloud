@@ -1812,15 +1812,25 @@ This is where the server becomes reachable from outside the office. Read the
 first part of [section 0](#0-how-to-read-this-runbook) again if you want the
 explanation of why this needs no router changes.
 
-> ⚠️ **Know this before you rely on the tunnel: uploads through Cloudflare are
-> capped at 100 MB per file** on the free plan (200 MB on Business). A staff
-> member saving a file *larger* than that over the tunnel gets an error;
-> smaller files, and **downloads of any size, are unaffected**, and everything
-> works without limit on the office network. This is Cloudflare's limit on all
-> traffic it proxies, not a GoldenCloud bug, and no setting on the Pi changes
-> it. If your staff routinely move multi-gigabyte files from outside the
-> office, stop here and read `DECISIONS.md` D-024 for the options before
-> going live.
+> ⚠️ **Know this about the tunnel: Cloudflare caps every upload it proxies at
+> 100 MB per request** on the free plan (200 MB on Business). Downloads of any
+> size are unaffected, and so is everything on the office network.
+>
+> **The GoldenCloud Windows app handles this for you**: it stores anything
+> larger than 95 MB as a series of smaller parts, so staff using the app can
+> upload files of any size from anywhere — a 300 MB upload was verified
+> end-to-end against this cap. Two things remain true, though:
+>
+> 1. Someone connecting **without** the app — macOS Finder, iPhone Files, or
+>    the app's own no-WinFsp fallback mode — cannot upload a single file over
+>    100 MB *through the tunnel*. Smaller files and all downloads still work.
+> 2. On the storage itself (and to those non-app clients), a large file is
+>    visible as `name.rclone_chunk.001`, `.002`, … plus a tiny metadata file.
+>    The parts are plain byte-splits: joining them back together
+>    (`cat name.rclone_chunk.* > name`) reconstructs the file exactly, so your
+>    data never depends on GoldenCloud or rclone to be readable.
+>
+> Background and the alternatives considered: `DECISIONS.md` D-024 and D-028.
 
 **112.** Add Cloudflare's software repository key:
 
