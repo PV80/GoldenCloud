@@ -763,6 +763,55 @@ func TestRetainOnlyClosesRemovedUsers(t *testing.T) {
 	}
 }
 
+// A user's root can be reassigned in users.yaml and reloaded over SIGHUP. The
+// cached handler was built against the old folder — and holds it open — so the
+// cache must notice the root changed and rebuild, or the user silently keeps
+// their old folder until a restart. Worse, if the old folder is later assigned
+// to a somebody else, two users would be serving the same directory.
+func TestReloadedRootChangeTakesEffect(t *testing.T) {
+	t.Parallel()
+	storage := t.TempDir()
+	for _, dir := range []string{"alice-old", "alice-new"} {
+		if err := os.Mkdir(filepath.Join(storage, dir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h, err := bcrypt.GenerateFromPassword([]byte("alice-pw"), testCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := auth.NewStore([]config.User{{Username: "alice", PasswordHash: string(h), Root: "alice-old"}})
+	a := auth.New(store, auth.Options{Logger: quietLogger(), FailureThreshold: 1 << 30})
+	dav := webdavx.New(webdavx.Options{StorageRoot: storage, Logger: quietLogger()})
+	t.Cleanup(func() { _ = dav.Close() })
+	srv := httptest.NewServer(dav.Handler(a))
+	t.Cleanup(srv.Close)
+	e := &env{srv: srv, storage: storage, dav: dav}
+
+	drain(t, e.do(t, http.MethodPut, "alice", "/f.txt", strings.NewReader("old data")))
+	if _, err := os.Stat(filepath.Join(storage, "alice-old", "f.txt")); err != nil {
+		t.Fatalf("setup write did not land in the old folder: %v", err)
+	}
+
+	// The admin reassigns alice's folder and the server reloads users.yaml.
+	store.Replace([]config.User{{Username: "alice", PasswordHash: string(h), Root: "alice-new"}})
+
+	// Her old file must no longer be visible...
+	resp := e.do(t, http.MethodGet, "alice", "/f.txt", nil)
+	drain(t, resp)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET after the root moved = %d, want 404 — the cached handler is still serving the old folder", resp.StatusCode)
+	}
+	// ...and new writes must land in the new folder, not the old one.
+	drain(t, e.do(t, http.MethodPut, "alice", "/g.txt", strings.NewReader("new data")))
+	if _, err := os.Stat(filepath.Join(storage, "alice-new", "g.txt")); err != nil {
+		t.Fatalf("write after the root moved did not land in the new folder: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(storage, "alice-old", "g.txt")); err == nil {
+		t.Fatal("write after the root moved landed in the OLD folder")
+	}
+}
+
 func TestPutEmptyBody(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t, "alice")

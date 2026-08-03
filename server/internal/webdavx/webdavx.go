@@ -58,6 +58,11 @@ type Server struct {
 }
 
 type userDAV struct {
+	// dir is the absolute folder this handler was built for. A reload can
+	// reassign a user's root; handlerFor compares dir against the folder the
+	// *current* user record resolves to and rebuilds on mismatch, so a stale
+	// handler can never keep serving a folder the user no longer owns.
+	dir     string
 	jail    *fsjail.Dir
 	handler *webdav.Handler
 }
@@ -162,17 +167,27 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, user config.User)
 		slog.Duration("took", time.Since(start)))
 }
 
-// handlerFor returns the user's WebDAV handler, creating it on first use.
+// handlerFor returns the user's WebDAV handler, creating it on first use. A
+// cached handler is only reused while it still points at the folder the user's
+// current record resolves to; if users.yaml reassigned the root and was
+// reloaded, the old handler (and the open directory handle inside its jail) is
+// dropped and a fresh one is built against the new folder.
 func (s *Server) handlerFor(user config.User) (*userDAV, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
 		return nil, errors.New("webdavx: server is closed")
 	}
-	if ud, ok := s.users[user.Username]; ok {
-		return ud, nil
-	}
 	dir := user.Dir(s.storageRoot)
+	if ud, ok := s.users[user.Username]; ok {
+		if ud.dir == dir {
+			return ud, nil
+		}
+		s.log.Info("user folder changed, rebuilding handler",
+			slog.String("user", user.Username))
+		delete(s.users, user.Username)
+		_ = ud.jail.Close()
+	}
 	jail, err := fsjail.Open(dir)
 	if err != nil {
 		return nil, fmt.Errorf("user %q: %w", user.Username, err)
@@ -182,7 +197,7 @@ func (s *Server) handlerFor(user config.User) (*userDAV, error) {
 		jail.Close()
 		return nil, fmt.Errorf("user %q: lock system: %w", user.Username, err)
 	}
-	ud := &userDAV{jail: jail}
+	ud := &userDAV{dir: dir, jail: jail}
 	ud.handler = &webdav.Handler{
 		FileSystem: jail,
 		// A fresh in-memory lock system per user, in its own random token
