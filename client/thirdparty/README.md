@@ -15,43 +15,45 @@ The pins live in [`../thirdparty.pins.json`](../thirdparty.pins.json).
 
 | File                  | Component | Version     | Source                                                                                       | Licence      |
 | --------------------- | --------- | ----------- | -------------------------------------------------------------------------------------------- | ------------ |
-| `rclone.exe`          | rclone    | 1.68.2      | `https://downloads.rclone.org/v1.68.2/rclone-v1.68.2-windows-amd64.zip`                        | MIT          |
-| `rclone-LICENSE.txt`  | rclone    | 1.68.2      | extracted from the same archive (`COPYING`)                                                    | MIT          |
+| `rclone.exe`          | rclone    | 1.68.2      | `https://github.com/rclone/rclone/releases/download/v1.68.2/rclone-v1.68.2-windows-amd64.zip`  | MIT          |
+| `rclone-LICENSE.txt`  | rclone    | 1.68.2      | _not present in the Windows zip — see below_                                                   | MIT          |
 | `winfsp.msi`          | WinFsp    | 2.0.23075   | `https://github.com/winfsp/winfsp/releases/download/v2.0/winfsp-2.0.23075.msi`                 | GPLv3 + FLOSS exception |
 
 ## Pinned hashes
 
 | Component | SHA256 |
 | --------- | ------ |
-| rclone 1.68.2 (zip) | _not yet pinned_ |
-| WinFsp 2.0.23075 (msi) | _not yet pinned_ |
+| rclone 1.68.2 (zip) | `812bf76cc02c04cf6327f3683f3d5a88e47d36c39db84c1a745777496be7d993` |
+| WinFsp 2.0.23075 (msi) | `6324dc81194a6a08f97b6aeca303cf5c2325c53ede153bae9fc4378f0838c101` |
 
-### Why they are blank, and how to fill them in
+Both are pinned, so `thirdparty.ps1` enforces them strictly and a mismatch
+aborts the build. Nothing here needs a human step.
 
-The client was authored in an environment with no outbound network access, so
-the real hashes could not be computed here, and inventing them would be worse
-than leaving them empty — a wrong hash fails the build for the wrong reason, and
-a made-up hash that happens to be checked in looks verified when it is not.
+### How these were verified
 
-`thirdparty.ps1` therefore treats an empty `sha256` as **"not yet pinned"**: it
-downloads the file, prints the SHA256 it actually saw as a loud warning
-(`::warning::` in GitHub Actions), and carries on. A non-empty `sha256` is
-enforced strictly and a mismatch aborts the build.
+- **rclone** — the hash is the one rclone itself publishes in the release's
+  `SHA256SUMS` file, and it was independently confirmed by downloading the zip
+  and hashing it. Both agreed.
+- **WinFsp** — the MSI was downloaded from the GitHub release and hashed
+  directly (2,207,744 bytes).
 
-To pin them, once:
+The rclone URL points at the GitHub release rather than `downloads.rclone.org`.
+Both hosts serve byte-identical archives — the hash above matches rclone's own
+published sum either way — but the GitHub host is reachable from restricted
+build networks where `downloads.rclone.org` is not.
 
-```powershell
-cd client
-./build.ps1 -Configuration Release      # prints both hashes as warnings
-```
+If `thirdparty.ps1` ever encounters an empty `sha256`, it treats it as "not yet
+pinned": it downloads, prints the hash it observed as a `::warning::`, and
+carries on. That path is the fallback for a version bump, not the steady state.
 
-Cross-check the values against the publishers before pasting them in:
+### A note on `rclone-LICENSE.txt`
 
-- rclone publishes `https://downloads.rclone.org/v1.68.2/SHA256SUMS`
-- WinFsp publishes the SHA256 of each MSI in its GitHub release notes
-
-Then put them into `../thirdparty.pins.json` and commit that one file. From that
-point on the build refuses to package an unexpected binary.
+The Windows zip does **not** contain a `COPYING` entry — its files are
+`rclone.exe`, `rclone.1`, `README.txt`, `README.html` and `git-log.txt`. The
+licence copy in `thirdparty.ps1` is therefore guarded and silently skips, which
+is why the build does not fail. rclone is MIT-licensed and redistributing the
+binary should carry that licence, so this is tracked as a packaging gap rather
+than a build problem: see `ROADMAP.md`.
 
 ## Bumping a version
 

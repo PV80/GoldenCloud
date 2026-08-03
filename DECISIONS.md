@@ -294,14 +294,22 @@ treated as "not yet recorded": the build warns loudly with the hash it actually
 saw and continues. `GOLDENCLOUD_RCLONE_EXE` and `GOLDENCLOUD_WINFSP_MSI` override
 the download for air-gapped builds.
 
-**Assumption.** The pins ship empty. The client was authored without outbound
-network access, so the true hashes could not be computed, and a fabricated hash
-that looks verified is worse than an honest blank. Filling them in is a one-off
-human step documented in `client/thirdparty/README.md`.
+**Resolution (orchestrator).** The pins no longer ship empty. The client agent
+worked behind a proxy that returned 403 for `downloads.rclone.org` and correctly
+refused to fabricate hashes; the orchestrator reached the artefacts by a
+different route and pinned the real values:
 
-**Consequence.** CI is green from the first run, and the day someone pastes the
-hashes in, supply-chain verification switches from advisory to enforced with no
-other change.
+- rclone 1.68.2 zip — `812bf76c…d993`, cross-checked against rclone's own
+  published `SHA256SUMS` **and** an independent download-and-hash. Both agreed.
+- WinFsp 2.0.23075 MSI — `6324dc81…c101`, hashed from the GitHub release asset.
+
+The rclone URL was moved from `downloads.rclone.org` to the GitHub release,
+which serves a byte-identical archive (same published sum) and is reachable from
+restricted build networks.
+
+**Consequence.** Supply-chain verification is **enforced, not advisory**, from
+the first CI run, and human gate count stays at two — this did not become a
+third. The empty-pin warning path remains as the version-bump workflow.
 
 ### D-018 — Nullable reference types are on; nullable warnings are not errors
 

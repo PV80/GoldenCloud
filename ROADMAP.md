@@ -25,3 +25,13 @@ mid-build. Each is a real want, not a bad idea — just not this release.
 5. **Server-side trash** — deletes move to a per-user `.trash` for 30 days,
    which is also the cheapest possible version of "undo".
 6. **macOS tray client** — same shape as the Windows one, once there is demand.
+
+## Known packaging gaps
+
+- **rclone's MIT licence is not shipped with the installer.** rclone's Windows
+  zip contains no `COPYING` entry (only `rclone.exe`, `rclone.1`, `README.txt`,
+  `README.html`, `git-log.txt`), so `thirdparty.ps1` finds nothing to copy and
+  skips silently. Redistributing an MIT binary should carry its licence text.
+  Fix: fetch `COPYING` from the rclone source tree at the pinned tag, or vendor
+  the licence text into `client/installer/`. Not a build failure — a compliance
+  loose end.

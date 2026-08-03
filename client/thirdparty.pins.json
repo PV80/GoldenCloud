@@ -12,8 +12,8 @@
   ],
   "rclone": {
     "version": "1.68.2",
-    "url": "https://downloads.rclone.org/v1.68.2/rclone-v1.68.2-windows-amd64.zip",
-    "sha256": "",
+    "url": "https://github.com/rclone/rclone/releases/download/v1.68.2/rclone-v1.68.2-windows-amd64.zip",
+    "sha256": "812bf76cc02c04cf6327f3683f3d5a88e47d36c39db84c1a745777496be7d993",
     "archive": "zip",
     "entry": "rclone.exe",
     "target": "rclone.exe",
@@ -23,7 +23,7 @@
   "winfsp": {
     "version": "2.0.23075",
     "url": "https://github.com/winfsp/winfsp/releases/download/v2.0/winfsp-2.0.23075.msi",
-    "sha256": "",
+    "sha256": "6324dc81194a6a08f97b6aeca303cf5c2325c53ede153bae9fc4378f0838c101",
     "archive": "none",
     "target": "winfsp.msi"
   }
