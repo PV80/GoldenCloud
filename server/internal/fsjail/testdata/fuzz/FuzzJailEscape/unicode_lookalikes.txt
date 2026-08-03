@@ -1,0 +1,2 @@
+go test fuzz v1
+string("/\u2216..\u2216secret.txt")
