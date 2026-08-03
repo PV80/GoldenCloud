@@ -5,7 +5,7 @@
 Two things cannot be done without you. Everything else is built and green
 before you touch either of these.
 
-### Gate 1 — Cloudflare account + domain (blocks Phase 4 deploy, not the build)
+### Gate 1 — Cloudflare account + domain (blocks deployment, not the build)
 
 You need to provide, or do yourself following `deploy/RUNBOOK.md` §6:
 
@@ -31,17 +31,21 @@ Until this is set, release builds still succeed but the app displays an
 "unconfigured build" banner and refuses to save credentials — deliberately, so
 an unconfigured installer can never be handed to staff by mistake.
 
+**There is no third gate.** The rclone and WinFsp supply-chain hashes were
+initially left blank for a human to fill in; they have since been pinned to real,
+independently cross-checked values, so that is no longer your problem.
+
 ---
 
 ## Phase status
 
-| Phase | Name                     | Status         |
-| ----- | ------------------------ | -------------- |
-| 0     | Scaffold                 | 🟡 in progress |
-| 1     | Server core              | ⬜ not started |
-| 2     | Client                   | ⬜ not started |
-| 3     | Packaging + deploy kit   | ⬜ not started |
-| 4     | Handover                 | ⬜ not started |
+| Phase | Name                     | Status                                   |
+| ----- | ------------------------ | ---------------------------------------- |
+| 0     | Scaffold                 | ✅ complete                              |
+| 1     | Server core              | ✅ complete, verified locally            |
+| 2     | Client                   | 🟡 core verified; Windows build unproven |
+| 3     | Packaging + deploy kit   | 🟡 written; docs sweep in progress       |
+| 4     | Handover                 | ⬜ blocked only on the two gates above   |
 
 ---
 
@@ -50,13 +54,133 @@ an unconfigured installer can never be handed to staff by mistake.
 **Acceptance criteria.** Repo structure, `DECISIONS.md`, `PROGRESS.md`, CI
 skeleton green.
 
-**Status.** In progress.
+**Passed.** Four-component layout; `DECISIONS.md` seeded D-001..D-008 and now
+carries D-001..D-023; both human gates recorded at the top of this file;
+`ROADMAP.md` records the v1 non-goals; `ci.yml` and `release.yml` landed.
 
-- [x] Repository structure created
-- [x] `DECISIONS.md` seeded with D-001..D-008
-- [x] `PROGRESS.md` with both human gates at the top
-- [x] `ROADMAP.md` with v1 non-goals recorded
-- [ ] CI skeleton green on GitHub Actions
+**Deferred.** Nothing.
 
-Passed: —
-Deferred: —
+---
+
+## Phase 1 — Server core
+
+**Acceptance criteria.** All server unit + integration tests pass in CI,
+including user-isolation and path-traversal suites. Admin CLI works end to end.
+
+**Passed — verified by the orchestrator by running it, not by reading it:**
+
+| Gate                          | Result                                                |
+| ----------------------------- | ----------------------------------------------------- |
+| `gofmt -l .`                  | clean                                                 |
+| `go vet ./...`                | clean                                                 |
+| `staticcheck ./...` (2025.1.1) | clean                                                 |
+| `go mod tidy`                 | leaves `go.mod`/`go.sum` unchanged                    |
+| `go test -race ./...`         | all packages pass, **77.2%** total statement coverage |
+| Integration suite             | **all pass, 41.9s**, against the real compiled binary |
+| `FuzzJailEscape`              | 57,891 executions, no escape                          |
+| Cross-compile                 | static `linux/arm64` + `linux/amd64`, version ldflag wired |
+
+Per-package coverage: `config` 85.3%, `auth` 85.2%, `fsjail` 81.0%,
+`webdavx` 78.5%, `cmd/goldencloud` 66.7%.
+
+**The mandatory isolation test passes.** `TestUserIsolation` denies Bob's data
+to Alice across a long table of encodings — `../`, `%2e%2e`, double-encoded
+`%252e%252e`, `....//`, `..;/`, NUL-byte splices, and absolute paths — for read,
+write, delete and listing alike.
+
+**Admin CLI verified end to end.** Created two users with `--password-stdin`,
+confirmed folders are created `0700`, confirmed `user list` prints no bcrypt
+hashes, confirmed quota conversion (50GB → 46.6GiB).
+
+**Two real bugs the server agent found and fixed:**
+
+1. `webdav.NewMemLS` issues colliding lock tokens — it counts from zero in every
+   instance, so two users' first locks were both `1`. Wrapped in a per-user
+   namespace that rejects foreign tokens (D-020).
+2. Bcrypt-per-request made the drive unusable: WebDAV re-authenticates on every
+   request and cost-12 bcrypt is ~250 ms on a Pi. A five-minute cache of
+   *successful* verifications, keyed by an HMAC over username + stored hash +
+   password, took the isolation suite from 104 s to 1.3 s. Failures are never
+   cached and a password change invalidates instantly (D-021).
+
+**Deferred.** Quota is parsed, stored and reported but **not enforced on write**
+— first item in `ROADMAP.md`. No audit log — second item.
+
+---
+
+## Phase 2 — Client
+
+**Acceptance criteria.** Client builds in CI; a mocked-server integration test
+proves sign-in, mount command generation, credential storage, and reconnect
+logic. `docs/CLIENT-TEST.md` written with literal numbered steps.
+
+**Passed:**
+
+- `GoldenCloud.Core` compiles clean — 0 warnings, 0 errors.
+- **`GoldenCloud.Core.Tests`: 135 tests, 135 passed, 0 failed**, run for real on
+  Linux after installing the .NET 8 SDK. They cover all four required areas:
+  sign-in against a stubbed WebDAV endpoint (207 vs 401, and the request really
+  is `PROPFIND` + `Depth: 0` + correct Basic credential), mount-command
+  generation for both strategies, credential storage round-trip and deletion on
+  sign-out, and the reconnect backoff schedule with its jitter band and cap.
+- An explicit test asserts the password appears in **no** process argument, no
+  file name, and no redacted command line — only in the environment or on stdin.
+- All 9 `GoldenCloud.Tray` source files pass a Roslyn syntax parse.
+- Supply-chain pins are real and enforced: rclone 1.68.2 cross-checked against
+  the publisher's own `SHA256SUMS` *and* an independent download-and-hash;
+  WinFsp 2.0.23075 hashed from the release asset.
+- All four NuGet pins confirmed to exist on nuget.org.
+- `docs/CLIENT-TEST.md` written: 58 steps, pass/fail box each.
+
+**Not yet proven — the honest gap.** The `GoldenCloud.Tray` project has **never
+been compiled**. The Ubuntu-packaged .NET SDK omits the WindowsDesktop targets,
+so `net8.0-windows` cannot build here at all. Syntax is verified; the Windows-only
+semantics are not: `CredWriteW` P/Invoke marshalling, WinFsp registry detection,
+WinForms tray behaviour, whether `net use` reliably reads a password from a
+redirected stdin pipe, and whether `rclone obscure -` accepts stdin. CI's
+`windows-latest` runner is the first real compiler for that project and **a fix
+round there should be expected.** Nothing in this repository should be read as a
+claim that the tray app has been run.
+
+---
+
+## Phase 3 — Packaging + deploy kit
+
+**Acceptance criteria.** Tagged release produces all three artefacts.
+`RUNBOOK.md` complete and reviewed for a zero-Linux-knowledge reader.
+
+**Passed:** `deploy/RUNBOOK.md` at 170 contiguous numbered steps; hardened
+`goldencloud.service`; commented `goldencloud.example.yaml` — with a server test
+that loads the shipped file verbatim so config and docs cannot drift; cloudflared
+templates; `Dockerfile` + compose; shellcheck-clean `install.sh`;
+`docs/{CLIENT-TEST,SECURITY,STAFF-GUIDE,OTHER-PLATFORMS}.md`;
+`scripts/check_docs.py` passes.
+
+**In progress.** The documentation was written before the server existed, so it
+asserted invented command output. A verification pass is now diffing every
+documented `goldencloud` command, flag, error string and log line against the
+real binary. Four mismatches are already fixed — `user list` column order,
+`user add` output and both its error strings, and a false "there is no rate
+limiting" claim in `docs/SECURITY.md`. More are expected.
+
+**Deferred.** The installer does not ship rclone's MIT licence text: the rclone
+Windows zip contains no `COPYING` entry, so the copy step silently skips. A
+compliance loose end, recorded in `ROADMAP.md`.
+
+---
+
+## Phase 4 — Handover
+
+Blocked only on the two gates at the top of this file. No engineering work
+remains before them.
+
+---
+
+## Definition of done — honest status
+
+| Criterion                                                              | Status |
+| ---------------------------------------------------------------------- | ------ |
+| CI fully green on the release tag                                       | ⬜ not yet run — the workflows have never executed on GitHub |
+| Fresh Windows 10 machine gets a working `G:` following `CLIENT-TEST.md` | ⬜ needs real hardware; tray app not yet compiled |
+| `RUNBOOK.md` takes a fresh Pi from blank SD card to reachable server    | 🟡 written and being verified; the Pi-specific steps need real hardware |
+| Server correctness                                                      | ✅ verified locally, including the mandatory isolation suite |
