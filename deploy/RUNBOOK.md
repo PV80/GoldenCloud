@@ -1640,16 +1640,20 @@ account on the machine.
 ```
 New password for alice:
 Retype new password:
-created user "alice" (folder: /mnt/wd/goldencloud/alice)
+Added user "alice".
+  folder: /mnt/wd/goldencloud/alice
+  quota:  unlimited
+Reload the running server with: systemctl reload goldencloud
 ```
 
 Nothing appears as you type the password. Type it twice.
 
-*If you see* `passwords do not match`: nothing was created. Run the command
-again.
+*If you see* `the two passwords do not match`: nothing was created. Run the
+command again.
 
-*If you see* `user "alice" already exists`: pick a different name, or use
-`user passwd` to change the existing one.
+*If you see* `user add: user "alice" already exists; use "goldencloud user
+passwd alice" to change their password`: pick a different name, or run the
+`user passwd` command it suggests.
 
 **104.** Choose their password properly. This is the password a staff member
 types into the tray app, and it is the only thing between the internet and
@@ -1686,10 +1690,10 @@ sudo goldencloud user list --config /etc/goldencloud/config.yaml
 *Expected output:*
 
 ```
-USERNAME  FOLDER                        QUOTA
-alice     /mnt/wd/goldencloud/alice     -
-bob       /mnt/wd/goldencloud/bob       -
-carol     /mnt/wd/goldencloud/carol     -
+USERNAME  QUOTA      FOLDER
+alice     unlimited  /mnt/wd/goldencloud/alice
+bob       unlimited  /mnt/wd/goldencloud/bob
+carol     unlimited  /mnt/wd/goldencloud/carol
 ```
 
 `-` in the quota column means no quota, which is the v1 behaviour — see

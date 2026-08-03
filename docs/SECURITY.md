@@ -275,11 +275,24 @@ read or wrote which file. If you need to answer "did Alice open the payroll
 folder on 14 March", v1 cannot tell you. It is the second item on
 [`../ROADMAP.md`](../ROADMAP.md).
 
-**There is no rate limiting on sign-in attempts** in the server itself.
-Cloudflare's edge absorbs volumetric attacks, but a slow, patient password-guessing
-attempt against one account is not specifically blocked. **This is why password
-quality matters** — step 104 of the runbook generates a 20-character random
-password, and that is the mitigation.
+**Sign-in attempts are rate limited.** After 5 consecutive failures for one
+client-IP-and-username pair, the server starts an exponential backoff — 1 second
+after the first failure past the threshold, doubling, capped at 5 minutes —
+answering `429 Too Many Requests` with a `Retry-After` header until the delay
+expires. A successful sign-in clears the counter, and requests that carry no
+credentials at all are never counted, so an unauthenticated `OPTIONS` probe from
+the Windows redirector cannot lock anybody out.
+
+Two limits worth knowing. The bucket is per IP *and* username, so an attacker
+spraying one password across many usernames from one address is slowed per
+account rather than globally. And behind the tunnel every request arrives from
+`cloudflared` on loopback, so the real client address is only distinguished when
+`trusted_proxy` is configured with the header and the CIDRs it may be believed
+from — otherwise all remote users share one bucket. The runbook's default
+configuration is the loopback case.
+
+**Password quality still matters most** — step 104 of the runbook generates a
+20-character random password, and that remains the primary defence.
 
 **There is no multi-factor authentication.** A username and password is the
 whole of authentication. If you need MFA, Cloudflare Access can be layered in
