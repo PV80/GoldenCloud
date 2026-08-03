@@ -208,7 +208,7 @@ remains before them.
 | Criterion                                                              | Status |
 | ---------------------------------------------------------------------- | ------ |
 | CI fully green                                                          | ✅ **8/8 jobs green** on GitHub Actions, two consecutive runs |
-| Release produces all three artefacts                                    | ✅ see below |
+| Release produces all three artefacts                                    | ✅ **v0.1.0 published**, all six assets, verified by download |
 | Fresh Windows 10 machine gets a working `G:` following `CLIENT-TEST.md` | ⬜ needs real hardware — the tray app compiles but has never been run |
 | `RUNBOOK.md` takes a fresh Pi from blank SD card to reachable server    | 🟡 every `goldencloud` command verified against the real binary; the Pi/WD/cloudflared steps need real hardware |
 | Server correctness                                                      | ✅ verified locally and in CI, including the mandatory isolation suite |
@@ -220,6 +220,31 @@ integration tests, cross-compile ×2 (arm64, amd64), client build + tests,
 client installer, docs check. The two earlier red runs were mid-development
 states — the integration package was still being written — and both Windows jobs
 have passed on every run in which they were reached.
+
+### Release evidence — v0.1.0
+
+<https://github.com/PV80/GoldenCloud/releases/tag/v0.1.0>
+
+| Asset | Size |
+| --- | --- |
+| `goldencloud-server-linux-arm64` (+ `.sha256`) | 7.0 MB |
+| `goldencloud-server-linux-amd64` (+ `.sha256`) | 7.5 MB |
+| `GoldenCloudSetup.exe` (+ `.sha256`) | 62.9 MB |
+
+Not merely "the workflow went green" — the amd64 artefact was **downloaded from
+the release and exercised**:
+
+- published `.sha256` matches the downloaded bytes
+- `version` prints `goldencloud v0.1.0` — the tag, not the branch name, which is
+  what the `inputs.tag` fix was for
+- created two users, served them, and confirmed on the released binary:
+  `PUT` own file `201`, `GET` own file `200`, wrong password `401`, and Alice
+  reading Bob's payslip via both `..` and `%2e%2e` → `404`
+
+**`GoldenCloudSetup.exe` is an UNCONFIGURED build** — human gate 2 is not set, so
+it shows the unconfigured banner and refuses to save credentials by design. It
+is fine for inspecting the installer; it is **not** the build to hand to staff.
+Set `GOLDENCLOUD_SERVER_URL` and re-run the release for that.
 
 ### A note on the release tag
 
