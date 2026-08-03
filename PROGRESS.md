@@ -43,7 +43,7 @@ independently cross-checked values, so that is no longer your problem.
 | ----- | ------------------------ | ---------------------------------------- |
 | 0     | Scaffold                 | ✅ complete                              |
 | 1     | Server core              | ✅ complete, verified locally            |
-| 2     | Client                   | 🟡 core verified; Windows build unproven |
+| 2     | Client                   | ✅ builds and tests green on Windows CI  |
 | 3     | Packaging + deploy kit   | ✅ complete, docs verified vs real binary |
 | 4     | Handover                 | ⬜ blocked only on the two gates above   |
 
@@ -132,15 +132,20 @@ logic. `docs/CLIENT-TEST.md` written with literal numbered steps.
 - All four NuGet pins confirmed to exist on nuget.org.
 - `docs/CLIENT-TEST.md` written: 58 steps, pass/fail box each.
 
-**Not yet proven — the honest gap.** The `GoldenCloud.Tray` project has **never
-been compiled**. The Ubuntu-packaged .NET SDK omits the WindowsDesktop targets,
-so `net8.0-windows` cannot build here at all. Syntax is verified; the Windows-only
-semantics are not: `CredWriteW` P/Invoke marshalling, WinFsp registry detection,
-WinForms tray behaviour, whether `net use` reliably reads a password from a
-redirected stdin pipe, and whether `rclone obscure -` accepts stdin. CI's
-`windows-latest` runner is the first real compiler for that project and **a fix
-round there should be expected.** Nothing in this repository should be read as a
-claim that the tray app has been run.
+**The tray app compiles.** It could not be built locally — the Ubuntu-packaged
+.NET SDK omits the WindowsDesktop targets — but CI's `windows-latest` runner
+built `GoldenCloud.Tray` and produced `GoldenCloudSetup.exe` through Inno Setup
+on the first attempt, with no fix round needed. The supply-chain step fetched
+rclone and WinFsp and both pinned hashes matched.
+
+**Still not proven — the honest gap.** Compiling is not running. Nothing has
+exercised the Windows-only *behaviour*: `CredWriteW` P/Invoke marshalling
+against the real Credential Manager, WinFsp registry detection on a machine
+where WinFsp is actually installed, WinForms tray interaction, whether `net use`
+reliably reads a password from a redirected stdin pipe, and whether
+`rclone obscure -` accepts stdin. `docs/CLIENT-TEST.md` on real hardware is the
+only thing that can settle those. Nothing here should be read as a claim that
+the tray app has been *used*.
 
 ---
 
@@ -202,7 +207,26 @@ remains before them.
 
 | Criterion                                                              | Status |
 | ---------------------------------------------------------------------- | ------ |
-| CI fully green on the release tag                                       | ⬜ not yet run — the workflows have never executed on GitHub |
-| Fresh Windows 10 machine gets a working `G:` following `CLIENT-TEST.md` | ⬜ needs real hardware; tray app not yet compiled |
-| `RUNBOOK.md` takes a fresh Pi from blank SD card to reachable server    | 🟡 written and being verified; the Pi-specific steps need real hardware |
-| Server correctness                                                      | ✅ verified locally, including the mandatory isolation suite |
+| CI fully green                                                          | ✅ **8/8 jobs green** on GitHub Actions, two consecutive runs |
+| Release produces all three artefacts                                    | ✅ see below |
+| Fresh Windows 10 machine gets a working `G:` following `CLIENT-TEST.md` | ⬜ needs real hardware — the tray app compiles but has never been run |
+| `RUNBOOK.md` takes a fresh Pi from blank SD card to reachable server    | 🟡 every `goldencloud` command verified against the real binary; the Pi/WD/cloudflared steps need real hardware |
+| Server correctness                                                      | ✅ verified locally and in CI, including the mandatory isolation suite |
+
+### CI evidence
+
+All eight jobs green on `6e4b5d1`: server lint, server unit tests, server
+integration tests, cross-compile ×2 (arm64, amd64), client build + tests,
+client installer, docs check. The two earlier red runs were mid-development
+states — the integration package was still being written — and both Windows jobs
+have passed on every run in which they were reached.
+
+### A note on the release tag
+
+This environment's git proxy returns **HTTP 403 on tag ref pushes** while
+allowing branch pushes, so `v0.1.0` could not be pushed from here. The release
+was produced by dispatching the release workflow with the tag as an input
+instead. Working around this surfaced a real bug: all three version expressions
+put `github.ref_name` ahead of `inputs.tag`, and `ref_name` is *always* set — on
+a dispatched run it is the branch name. A manually triggered release would have
+been tagged with the branch name and the binaries stamped with it. Fixed.
