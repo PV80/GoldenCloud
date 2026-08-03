@@ -131,3 +131,95 @@ the server does not start before the share is present.
 preflight check loudly instead of silently creating user folders on the Pi's SD
 card — a failure mode that would look like working software while storing data
 in the wrong place.
+
+---
+
+## Phase 3 — Packaging + deploy kit
+
+### D-009 — `--config` is a global flag, shared by `serve` and every `user` subcommand
+
+**Context.** The brief names the CLI surface as `serve --config <path>`,
+`user add|remove|passwd|list`, and `version`, without saying how the `user`
+subcommands find `users.yaml`. The runbook has to write a literal command.
+
+**Decision.** `--config` is a global flag. `goldencloud user add --config
+/etc/goldencloud/config.yaml alice` reads `users_file` out of the same config
+the server uses, rather than taking a separate `--users-file` path. The
+alternative — teaching the operator two ways to name the same file — is how you
+end up with an admin CLI editing one file while the server reads another.
+
+Consequently the runbook and `install.sh` document `--config` on every `user`
+invocation, and assume `user add`/`user passwd` prompt for the password twice
+on the terminal and never accept it as an argument (a command line is
+world-readable, cf. D-006).
+
+**Consequence.** A contract on `server/cmd/goldencloud`. If it ships a different
+flag, `deploy/RUNBOOK.md` steps 103–111 and 153–162, `deploy/install.sh`, and
+`docs/SECURITY.md` all need the same one-word change.
+
+### D-010 — `storage_root` is a dedicated sub-folder of the mount, not the mount itself
+
+**Context.** The brief says the storage root is "typically `/mnt/wd`", which is
+the whole WD Local Access share — the same share that already holds whatever
+the office put on the NAS before GoldenCloud existed.
+
+**Decision.** `/mnt/wd` is the mount; `/mnt/wd/goldencloud` is the storage root.
+Per-user folders are created under it.
+
+**Consequence.** A user called `Documents` or `Public` cannot collide with an
+existing top-level folder on the NAS, and "everything GoldenCloud owns" is one
+directory you can archive, move, or point at a different NAS. The systemd unit
+still declares `ReadWritePaths=/mnt/wd` (the mount) so the unit survives moving
+the storage root, with a comment saying it can be narrowed.
+
+### D-011 — fstab automounts, but the service hard-requires the real mount unit
+
+**Context.** Two requirements pull in opposite directions: boot must never hang
+waiting for a NAS that is switched off (D-008's failure mode is bad, but an
+unreachable headless Pi is worse), and the server must never start without its
+storage.
+
+**Decision.** The fstab entry carries `_netdev,nofail,x-systemd.automount`, so
+boot never blocks. `goldencloud.service` then declares `Requires=mnt-wd.mount`
+and `RequiresMountsFor=/mnt/wd` — the *real* mount, not the automount trigger.
+
+The distinction matters for more than tidiness: `ProtectSystem=strict` plus
+`ReadWritePaths=/mnt/wd` are evaluated when the service's private mount
+namespace is built. If `/mnt/wd` were still an untriggered autofs placeholder at
+that instant, the service would get a namespace pointing at nothing. Requiring
+the real mount removes the race.
+
+**Consequence.** A Pi with the NAS unplugged boots normally to a login prompt,
+with `goldencloud.service` in a clean `failed` state naming the mount as the
+reason. That is the diagnosable failure.
+
+### D-012 — Default port 8080, loopback, duplicated in exactly two files
+
+**Context.** The port appears in `/etc/goldencloud/config.yaml` (`listen`) and
+in `/etc/cloudflared/config.yml` (the ingress `service:` URL). Nothing can
+enforce agreement between two programs' config files.
+
+**Decision.** Standardise on `127.0.0.1:8080` everywhere — example config,
+runbook, `install.sh`, Dockerfile `EXPOSE`, cloudflared template — and make the
+mismatch a first-class troubleshooting entry (`502 Bad Gateway`) rather than
+pretending it will not happen.
+
+**Consequence.** Anyone changing the port has exactly two files to edit, and the
+symptom of forgetting the second one is documented at the point they will look.
+
+### D-013 — The container image is a secondary path, explicitly not the supported deployment
+
+**Context.** `deploy/Dockerfile` and `deploy/docker-compose.example.yml` are
+deliverables, but the runbook, the troubleshooting section, and the support
+burden all assume systemd on a Pi.
+
+**Decision.** Ship both, and say so in the files themselves. The image is
+multi-stage, `CGO_ENABLED=0`, distroless-static, non-root (UID 65532), with a
+build-time assertion that the binary is not dynamically linked. The Compose file
+carries the same hardening ideas (`read_only`, `cap_drop: ALL`,
+`no-new-privileges`) and a loud comment that `listen` must become `0.0.0.0:8080`
+inside a container — because loopback in a container is not loopback on the host
+— and therefore must have TLS termination in front of it.
+
+**Consequence.** Someone who already runs Docker is not blocked, and nobody
+reaches for the container thinking it is the blessed path.
