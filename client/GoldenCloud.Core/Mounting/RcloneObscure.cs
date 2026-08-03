@@ -14,7 +14,7 @@ public interface IPasswordObscurer
 /// Managed re-implementation of rclone's <c>obscure</c> encoding.
 ///
 /// rclone refuses a WebDAV password that is not obscured, so the value handed to
-/// <c>RCLONE_WEBDAV_PASS</c> has to be in this form. The encoding is AES-CTR
+/// <c>RCLONE_CONFIG_GCWEBDAV_PASS</c> has to be in this form. The encoding is AES-CTR
 /// under a fixed key that ships inside rclone itself, with a random 16-byte IV
 /// prepended, the whole thing then base64url-encoded without padding.
 ///

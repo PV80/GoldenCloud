@@ -93,22 +93,43 @@ directory is. The Start-menu group has a shortcut for it.
 `MountSupervisor` picks one at mount time. The user can force either through
 `strategy=` in `%LOCALAPPDATA%\GoldenCloud\settings.ini`.
 
-### Primary — rclone + WinFsp (D-005)
+### Primary — rclone + WinFsp, chunker-wrapped (D-005, D-028)
 
 ```
-rclone.exe mount :webdav: G: --webdav-url=https://…/ --webdav-vendor=other
-           --webdav-user=alice --vfs-cache-mode=writes --dir-cache-time=10s
+rclone.exe mount gcdrive: G: --vfs-cache-mode=writes --dir-cache-time=10s
            --volname=GoldenCloud --network-mode --no-console --log-level=NOTICE
            --cache-dir=… --log-file=…
 ```
 
+with the remotes defined entirely in the child process's environment
+(`RCLONE_CONFIG_<NAME>_<KEY>`), so **no `rclone.conf` is ever created, read or
+written**:
+
+| Variable | Value |
+| --- | --- |
+| `RCLONE_CONFIG_GCWEBDAV_TYPE` | `webdav` |
+| `RCLONE_CONFIG_GCWEBDAV_URL` | the baked-in server URL |
+| `RCLONE_CONFIG_GCWEBDAV_VENDOR` | `other` |
+| `RCLONE_CONFIG_GCWEBDAV_USER` | the signed-in username |
+| `RCLONE_CONFIG_GCWEBDAV_PASS` | the obscured password — **never an argument** |
+| `RCLONE_CONFIG_GCDRIVE_TYPE` | `chunker` |
+| `RCLONE_CONFIG_GCDRIVE_REMOTE` | `gcwebdav:` |
+| `RCLONE_CONFIG_GCDRIVE_CHUNK_SIZE` | `95Mi` |
+| `RCLONE_CONFIG_GCDRIVE_FAIL_HARD` | `true` |
+
 - Chosen when WinFsp is installed **and** `rclone.exe` sits next to the tray app.
-- `:webdav:` is rclone's connection-string form for an ad-hoc remote, so **no
-  `rclone.conf` is ever created, read or written**.
-- No file-size limit, proper streaming, survives flaky links, and the mount ends
-  cleanly when the process is killed.
-- The password is passed in the environment variable `RCLONE_WEBDAV_PASS`,
-  obscured. It is never an argument.
+- The drive mounts `gcdrive:`, a **chunker overlay**: files over 95 MiB are
+  stored as `name.rclone_chunk.001…` parts, each safely below Cloudflare's
+  100 MB proxied-upload cap (D-024), and reassembled transparently on read.
+  Files at or under 95 MiB are stored as ordinary single files, and files
+  uploaded by other WebDAV clients read back unchanged. Verified end-to-end
+  against the real server: a 300 MB upload stores as four sub-cap chunks and
+  round-trips with an identical SHA-256.
+- Chunks are plain byte-splits — with nothing but a shell,
+  `cat name.rclone_chunk.* > name` reconstructs the file, so the data does not
+  depend on rclone to be readable.
+- Proper streaming, survives flaky links, and the mount ends cleanly when the
+  process is killed.
 
 ### Fallback — the Windows WebDAV redirector
 
@@ -171,7 +192,7 @@ and the last username, so the sign-in box can pre-fill.
 ### The rclone password encoding
 
 rclone refuses a WebDAV password that has not been through its `obscure`
-encoding, so the value handed to `RCLONE_WEBDAV_PASS` has to be in that form.
+encoding, so the value handed to `RCLONE_CONFIG_GCWEBDAV_PASS` has to be in that form.
 The tray app runs the bundled `rclone.exe obscure -` and feeds the password on
 standard input, which is guaranteed correct because rclone does the work itself.
 If that fails for any reason — rclone missing, blocked, or a future release that

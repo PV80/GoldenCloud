@@ -33,18 +33,40 @@ public class MountCommandTests
 
         Assert.Equal(@"C:\Program Files\GoldenCloud\rclone.exe", command.FileName);
         Assert.Equal("mount", command.Arguments[0]);
-        Assert.Equal(":webdav:", command.Arguments[1]);
+        Assert.Equal("gcdrive:", command.Arguments[1]);
         Assert.Equal("G:", command.Arguments[2]);
     }
 
     [Fact]
-    public void Rclone_command_carries_the_url_vendor_and_user_as_flags()
+    public void Rclone_mounts_the_chunker_overlay_not_the_raw_webdav_remote()
+    {
+        // D-024/D-028: a raw WebDAV mount uploads each file as one PUT, which
+        // dies at Cloudflare's 100 MB proxied-body cap. The drive must mount
+        // the chunker remote, which wraps the WebDAV one.
+        MountCommand command = new RcloneMountCommandBuilder().BuildMount(Request(), "obscured-value");
+
+        Assert.Equal(RcloneMountCommandBuilder.DriveRemoteName + ":", command.Arguments[1]);
+        Assert.Equal("chunker", command.Environment["RCLONE_CONFIG_GCDRIVE_TYPE"]);
+        Assert.Equal(
+            RcloneMountCommandBuilder.WebDavRemoteName + ":",
+            command.Environment["RCLONE_CONFIG_GCDRIVE_REMOTE"]);
+        // Chunks must stay under Cloudflare's 100,000,000-byte cap.
+        Assert.Equal("95Mi", command.Environment["RCLONE_CONFIG_GCDRIVE_CHUNK_SIZE"]);
+        Assert.True(95L * 1024 * 1024 < 100_000_000, "chunk size must be under the Cloudflare cap");
+        // A missing chunk must be a loud error, not a truncated file.
+        Assert.Equal("true", command.Environment["RCLONE_CONFIG_GCDRIVE_FAIL_HARD"]);
+    }
+
+    [Fact]
+    public void Rclone_defines_the_webdav_backend_entirely_in_the_environment()
     {
         MountCommand command = new RcloneMountCommandBuilder().BuildMount(Request(), "obscured-value");
 
-        Assert.Contains("--webdav-url=https://cloud.acme.test/", command.Arguments);
-        Assert.Contains("--webdav-vendor=other", command.Arguments);
-        Assert.Contains("--webdav-user=alice", command.Arguments);
+        Assert.Equal("webdav", command.Environment["RCLONE_CONFIG_GCWEBDAV_TYPE"]);
+        Assert.Equal("https://cloud.acme.test/", command.Environment["RCLONE_CONFIG_GCWEBDAV_URL"]);
+        Assert.Equal("other", command.Environment["RCLONE_CONFIG_GCWEBDAV_VENDOR"]);
+        Assert.Equal("alice", command.Environment["RCLONE_CONFIG_GCWEBDAV_USER"]);
+
         Assert.Contains("--vfs-cache-mode=writes", command.Arguments);
         Assert.Contains("--volname=GoldenCloud", command.Arguments);
 
@@ -54,13 +76,15 @@ public class MountCommandTests
     }
 
     [Fact]
-    public void Rclone_uses_an_ad_hoc_remote_so_no_rclone_conf_is_ever_written()
+    public void Rclone_uses_environment_remotes_so_no_rclone_conf_is_ever_written()
     {
         MountCommand command = new RcloneMountCommandBuilder().BuildMount(Request(), "obscured-value");
 
-        Assert.Contains(":webdav:", command.Arguments);
         Assert.DoesNotContain(command.Arguments, a => a.Contains("rclone.conf", StringComparison.OrdinalIgnoreCase));
         Assert.DoesNotContain(command.Arguments, a => a.StartsWith("--config", StringComparison.Ordinal));
+        // The URL and username travel in the environment, not argv.
+        Assert.DoesNotContain(command.Arguments, a => a.Contains("cloud.acme.test", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(command.Arguments, a => a.Contains("alice", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
@@ -95,7 +119,16 @@ public class MountCommandTests
         MountCommand command = new RcloneMountCommandBuilder().BuildMount(Request(), obscured);
 
         Assert.Equal(obscured, command.Environment[RcloneMountCommandBuilder.PasswordEnvironmentVariable]);
-        Assert.Single(command.Environment);
+        // The secret lives in exactly one environment entry; every other entry
+        // is remote plumbing that must not carry it.
+        foreach (var pair in command.Environment)
+        {
+            if (pair.Key != RcloneMountCommandBuilder.PasswordEnvironmentVariable)
+            {
+                Assert.DoesNotContain(obscured, pair.Value, StringComparison.Ordinal);
+                Assert.DoesNotContain(Password, pair.Value, StringComparison.Ordinal);
+            }
+        }
         Assert.Null(command.StandardInput);
     }
 
