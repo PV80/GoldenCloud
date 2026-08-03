@@ -110,11 +110,19 @@ file to leak.
 **Context.** "Server address is pre-baked at build time from a config constant,
 so staff only enter username and password."
 
-**Decision.** `client/GoldenCloud.Tray/BuildConfig.cs` holds the constant, and
-CI overrides it from the `GOLDENCLOUD_SERVER_URL` build variable. A debug build
-falls back to `https://cloud.example.com` and the app shows a visible banner
-saying the build is unconfigured, so an unconfigured installer can never be
-mistaken for a real one.
+**Decision.** The constant is baked in at compile time from the
+`GOLDENCLOUD_SERVER_URL` build variable. A build with no value set falls back to
+`https://cloud.example.com` and the app shows a visible banner saying the build
+is unconfigured, so an unconfigured installer can never be mistaken for a real
+one.
+
+**As implemented.** There is no checked-in `BuildConfig.cs` — an earlier draft of
+this entry named one. `build.ps1` passes `-p:GoldenCloudServerUrl=<url>` and
+`GoldenCloud.Tray.csproj` generates `GoldenCloudBuildConfig.g.cs` under `obj/`
+before compilation. Generating rather than rewriting a tracked file keeps the
+working tree clean and the build idempotent, and `build.ps1` refuses a
+malformed URL or a plain `http://` address for any non-loopback host rather than
+baking in something that would send credentials in clear.
 
 **Consequence.** Human gate 2 in `PROGRESS.md` is exactly this value.
 
