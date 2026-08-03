@@ -273,6 +273,26 @@ var userFields = map[string]bool{
 
 var usernameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,31}$`)
 
+// ValidateUsername checks a username. Usernames are lowercase and
+// filesystem-safe because they are also, by default, folder names: allowing
+// "Alice" and "alice" to differ would create two accounts that collide on a
+// case-insensitive filesystem.
+func ValidateUsername(name string) error {
+	switch {
+	case name == "":
+		return errors.New("a username is required")
+	case strings.ToLower(name) != name:
+		return fmt.Errorf("username %q must be lowercase", name)
+	case !usernameRE.MatchString(name):
+		return fmt.Errorf("username %q is not allowed; use 1-32 characters from a-z, 0-9, dot, dash and underscore, starting with a letter or digit", name)
+	}
+	return nil
+}
+
+// ValidateRoot checks a user folder name: it must be a clean relative path
+// that stays inside the storage root.
+func ValidateRoot(root string) error { return validateRoot(root) }
+
 // LoadUsers reads and validates users.yaml.
 func LoadUsers(path string) ([]User, error) {
 	raw, err := os.ReadFile(path)
@@ -342,13 +362,8 @@ func parseUsers(doc *yaml.Node) ([]User, error) {
 			return nil, fmt.Errorf("line %d: users: %w", item.Line, err)
 		}
 
-		switch {
-		case uy.Username == "":
-			return nil, fail("username", "is required")
-		case strings.ToLower(uy.Username) != uy.Username:
-			return nil, fail("username", "must be lowercase, got %q", uy.Username)
-		case !usernameRE.MatchString(uy.Username):
-			return nil, fail("username", "%q is not allowed; use 1-32 characters from a-z, 0-9, dot, dash and underscore, starting with a letter or digit", uy.Username)
+		if err := ValidateUsername(uy.Username); err != nil {
+			return nil, fail("username", "%v", err)
 		}
 		if prev, dup := seenName[uy.Username]; dup {
 			return nil, fmt.Errorf("line %d: users: username: duplicate username %q (first defined on line %d)",
