@@ -44,7 +44,7 @@ independently cross-checked values, so that is no longer your problem.
 | 0     | Scaffold                 | ✅ complete                              |
 | 1     | Server core              | ✅ complete, verified locally            |
 | 2     | Client                   | 🟡 core verified; Windows build unproven |
-| 3     | Packaging + deploy kit   | 🟡 written; docs sweep in progress       |
+| 3     | Packaging + deploy kit   | ✅ complete, docs verified vs real binary |
 | 4     | Handover                 | ⬜ blocked only on the two gates above   |
 
 ---
@@ -156,12 +156,34 @@ templates; `Dockerfile` + compose; shellcheck-clean `install.sh`;
 `docs/{CLIENT-TEST,SECURITY,STAFF-GUIDE,OTHER-PLATFORMS}.md`;
 `scripts/check_docs.py` passes.
 
-**In progress.** The documentation was written before the server existed, so it
-asserted invented command output. A verification pass is now diffing every
-documented `goldencloud` command, flag, error string and log line against the
-real binary. Four mismatches are already fixed — `user list` column order,
-`user add` output and both its error strings, and a false "there is no rate
-limiting" claim in `docs/SECURITY.md`. More are expected.
+**Documentation reconciled against the real binary.** The docs were written
+before the server existed, so every command output in them was invented. A full
+verification pass ran each documented command against the compiled binary and
+diffed the result. **28 mismatches were found and fixed** — 4 by the orchestrator
+and 24 by the sweep. The significant ones:
+
+| Was documented | Reality |
+| --- | --- |
+| `GET /` returns `200` | returns **405** — `x/net/webdav` refuses a collection GET |
+| `level=info msg="listening" addr=…` | `time=… level=INFO msg=listening addr=… tls=false trusted_proxy=false` |
+| `log_level: info` logs one line per request | per-request logging is **debug**; `info` is lifecycle only |
+| a missing `users.yaml` means "no users yet" | **`serve` refuses to start**; only the admin CLI treats it as empty |
+| no sign-in rate limiting | 5 failures → 429 + `Retry-After`, and a *correct* password is refused mid-lockout |
+| `Retype new password:` | `Repeat password:` |
+| `user list` shows `-` for no quota | shows `unlimited` |
+| `install.sh` covers steps 61–91 | it covers 75–102 |
+
+Five preflight/config error strings and the troubleshooting `grep` patterns were
+also wrong, and `require_mountpoint` was missing from a config file that claimed
+to document every option.
+
+The orchestrator independently re-verified the sharpest claims by running them:
+the 405, the startup log line, `serve` refusing a missing users file, the 401→429
+transition on the 6th attempt, and `Retry-After` being served to a *correct*
+password during lockout. All held.
+
+**No server bugs were found** — every divergence was the documentation being
+wrong, which is the right direction given the server is the tested component.
 
 **Deferred.** The installer does not ship rclone's MIT licence text: the rclone
 Windows zip contains no `COPYING` entry, so the copy step silently skips. A
