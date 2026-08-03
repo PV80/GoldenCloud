@@ -1,0 +1,210 @@
+# =============================================================================
+# GoldenCloud server configuration — annotated example
+# =============================================================================
+#
+# Copy this file to /etc/goldencloud/config.yaml on the server and edit it.
+# The server is started with:
+#
+#     goldencloud serve --config /etc/goldencloud/config.yaml
+#
+# File format is YAML. Two rules that catch people out:
+#
+#   * Indentation is spaces only. A TAB character anywhere in this file will
+#     make the server refuse to start with a parse error.
+#   * Anything after a "#" is a comment and is ignored.
+#
+# Recommended ownership and permissions on the real file:
+#
+#     sudo chown root:goldencloud /etc/goldencloud/config.yaml
+#     sudo chmod 0640            /etc/goldencloud/config.yaml
+#
+# It contains no passwords, but it does contain your storage layout, and there
+# is no reason for every account on the machine to read it.
+#
+# Full deployment instructions: ./RUNBOOK.md
+# Security model:               ../docs/SECURITY.md
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# listen — the TCP address the WebDAV server binds to.
+# -----------------------------------------------------------------------------
+# Format is "address:port".
+#
+# LEAVE THIS AS A LOOPBACK ADDRESS (127.0.0.1 or [::1]) unless you have read
+# the "tls" and "trusted_proxy" sections below and understand them.
+#
+# 127.0.0.1 means "only programs running on this same machine may connect".
+# In the supported deployment that is exactly right: cloudflared runs on the
+# same machine, connects to 127.0.0.1:8080, and is the only thing that ever
+# talks to the server. Cloudflare terminates HTTPS for you at the edge, so the
+# hop from cloudflared to the server never leaves the machine and never needs
+# its own certificate.
+#
+# What happens if you get this wrong:
+#   * "0.0.0.0:8080" exposes the server to your whole office LAN in plain HTTP.
+#     Usernames and passwords would cross the office network unencrypted. The
+#     server REFUSES TO START in this configuration unless you have explicitly
+#     enabled tls.enabled or trusted_proxy.enabled below — that refusal is a
+#     safety feature, not a bug (see DECISIONS.md, D-003).
+#   * A port already in use gives "listen tcp 127.0.0.1:8080: bind: address
+#     already in use" at startup. Pick another port and update the cloudflared
+#     ingress rule to match.
+#
+# If you change the port, you MUST change it in cloudflared/config.yml too, or
+# the tunnel will connect to nothing and every request returns 502.
+listen: "127.0.0.1:8080"
+
+
+# -----------------------------------------------------------------------------
+# storage_root — the directory that holds every user's folder.
+# -----------------------------------------------------------------------------
+# On the supported Raspberry Pi deployment this lives inside /mnt/wd, which is
+# the WD My Cloud Home's Local Access SMB share mounted by the operating
+# system. The server never speaks SMB itself; as far as it is concerned this is
+# an ordinary directory (see DECISIONS.md, D-008).
+#
+# A dedicated sub-folder is used rather than the bare share root so that
+# GoldenCloud's per-user folders cannot collide with photos, backups, or
+# anything else already sitting on the WD unit.
+#
+# Each user gets storage_root/<their folder name>, and each user is locked
+# inside their own folder. They cannot see storage_root itself, cannot see a
+# sibling's folder, and cannot escape upwards with "..".
+#
+# What happens if you get this wrong:
+#   * A path that does not exist, or that the goldencloud user cannot write to,
+#     makes the server fail its startup preflight check with a clear error.
+#     That is deliberate. The alternative — silently creating user folders on
+#     the Pi's SD card while the WD share is unmounted — would look like
+#     working software while putting everybody's files in the wrong place, and
+#     would silently lose them the next time the share came back.
+#   * Pointing this at a path that is NOT on the mounted share (for example a
+#     typo like /mnt/wed) gives you exactly that failure mode, which is why the
+#     systemd unit hard-requires the /mnt/wd mount before it will start at all.
+storage_root: "/mnt/wd/goldencloud"
+
+
+# -----------------------------------------------------------------------------
+# users_file — the user database.
+# -----------------------------------------------------------------------------
+# A YAML file holding, per user: username, bcrypt password hash, the name of
+# their folder under storage_root, and an optional quota. There is no database
+# server (see DECISIONS.md, D-004).
+#
+# EDIT THIS FILE ONLY THROUGH THE ADMIN CLI:
+#
+#     sudo goldencloud user add    --config /etc/goldencloud/config.yaml alice
+#     sudo goldencloud user list   --config /etc/goldencloud/config.yaml
+#     sudo goldencloud user passwd --config /etc/goldencloud/config.yaml alice
+#     sudo goldencloud user remove --config /etc/goldencloud/config.yaml alice
+#
+# The CLI writes it atomically, so a power cut halfway through cannot leave you
+# with a truncated user list and nobody able to sign in.
+#
+# Permissions on the real file:
+#     sudo chown root:goldencloud /etc/goldencloud/users.yaml
+#     sudo chmod 0640            /etc/goldencloud/users.yaml
+#
+# It holds bcrypt hashes, not passwords, so a copy of it does not let an
+# attacker sign in directly — but it is still the crown jewels and should not
+# be world-readable.
+#
+# What happens if you get this wrong:
+#   * A missing file is treated as "no users yet"; nobody can sign in and every
+#     request returns 401. Run `goldencloud user add` to create the first user.
+#   * A file the server cannot read makes startup fail with a permission error.
+#   * Hand-editing it and breaking the YAML makes startup fail with a parse
+#     error naming the line. Restore from your backup copy.
+users_file: "/etc/goldencloud/users.yaml"
+
+
+# -----------------------------------------------------------------------------
+# log_level — how much the server writes to the journal.
+# -----------------------------------------------------------------------------
+# One of: debug, info, warn, error
+#
+#   error  Only things that are broken.
+#   warn   Plus things that are suspicious — failed sign-ins, rejected paths.
+#   info   Plus one line per request and the normal lifecycle messages.  <- use this
+#   debug  Plus internal detail. Very noisy. Turn it on only while chasing a
+#          specific problem, and turn it back down afterwards.
+#
+# Logs go to the systemd journal. Read them with:
+#     sudo journalctl -u goldencloud -f
+#
+# What happens if you get this wrong:
+#   * "debug" left on permanently will fill the journal and wear the SD card
+#     faster. It is not dangerous, just wasteful.
+#   * An unrecognised value makes the server fail to start rather than guess.
+#   * Passwords are never logged at any level. If you ever see one in the log,
+#     that is a bug — report it.
+log_level: "info"
+
+
+# -----------------------------------------------------------------------------
+# tls — serve HTTPS directly from this server.
+# -----------------------------------------------------------------------------
+# LEAVE THIS DISABLED for the Cloudflare Tunnel deployment described in
+# RUNBOOK.md. Cloudflare already terminates HTTPS at its edge with a
+# certificate it manages and renews for you; doing it twice buys nothing and
+# gives you a certificate to renew by hand forever.
+#
+# Turn it on only if you are NOT using the tunnel — for example if you are
+# publishing the server yourself behind your own reverse proxy or directly on
+# a public interface — and you therefore need the server itself to speak TLS.
+#
+#   enabled    true/false. When true, cert_file and key_file must both be set.
+#   cert_file  PEM certificate chain (leaf first, then intermediates).
+#   key_file   PEM private key. Must be mode 0600 and readable by the
+#              goldencloud user, and must NOT be world-readable.
+#
+# What happens if you get this wrong:
+#   * enabled: true with missing or unreadable files: the server refuses to
+#     start and names the file it could not open.
+#   * Certificate and key that do not match each other: startup fails with a
+#     "private key does not match public key" error.
+#   * An expired certificate does not stop the server, but every client will
+#     refuse to connect. Renewal is your job once you turn this on.
+tls:
+  enabled: false
+  cert_file: ""
+  key_file: ""
+
+
+# -----------------------------------------------------------------------------
+# trusted_proxy — tell the server it is behind a reverse proxy.
+# -----------------------------------------------------------------------------
+# This does two things:
+#
+#   1. It lets the server accept plain HTTP on a NON-loopback listen address
+#      without refusing to start, because you are asserting that something in
+#      front of it already did the TLS.
+#   2. It makes the server believe the client IP address in the forwarded
+#      header, so failed-sign-in log lines name the real client rather than the
+#      proxy.
+#
+# YOU DO NOT NEED THIS for the deployment in RUNBOOK.md. There, cloudflared
+# runs on the same machine and reaches the server over 127.0.0.1, so the listen
+# address is already loopback and nothing needs relaxing.
+#
+#   enabled       true/false.
+#   header        Which header carries the client IP. "X-Forwarded-For" is the
+#                 usual answer; Cloudflare also sends "CF-Connecting-IP".
+#   allowed_cidrs Only trust that header when the connection itself comes from
+#                 one of these networks. NEVER leave this empty while enabled
+#                 is true.
+#
+# What happens if you get this wrong:
+#   * enabled: true with an empty allowed_cidrs means ANYONE who can reach the
+#     server can forge their apparent IP address by setting a header. That
+#     defeats rate limiting and poisons your audit trail. The server refuses to
+#     start in that combination.
+#   * The really bad mistake is enabled: true together with a listen address of
+#     0.0.0.0 and no proxy actually in front. That publishes plain-HTTP Basic
+#     authentication to your whole network. If you are not certain you need
+#     this section, you do not need this section.
+trusted_proxy:
+  enabled: false
+  header: "X-Forwarded-For"
+  allowed_cidrs: []

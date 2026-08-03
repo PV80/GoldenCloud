@@ -1,0 +1,129 @@
+# =============================================================================
+# Cloudflare Tunnel configuration for GoldenCloud — TEMPLATE
+# =============================================================================
+#
+# Copy this to /etc/cloudflared/config.yml on the server and replace every
+# <REPLACE-ME> marker. There are three of them, and one optional fourth.
+#
+#     sudo cp config.yml.template /etc/cloudflared/config.yml
+#     sudo nano /etc/cloudflared/config.yml
+#
+# Then check your work before starting anything:
+#
+#     cloudflared tunnel ingress validate
+#     cloudflared tunnel ingress rule https://cloud.example.com/
+#
+# The first command says "Validating rules from /etc/cloudflared/config.yml OK"
+# if the file parses. The second tells you which rule a given URL would match,
+# which is the quickest way to catch a hostname typo.
+#
+# Ownership and permissions:
+#     sudo chown root:root /etc/cloudflared/config.yml
+#     sudo chmod 0644      /etc/cloudflared/config.yml
+#
+# The credentials file this points at is the secret; see ./README.md.
+# =============================================================================
+
+
+# --- Which tunnel this is ----------------------------------------------------
+# The UUID printed by `cloudflared tunnel create goldencloud`. It looks like
+# 6ff42ae2-765d-4adf-8112-31c55c1551ef. You can get it back at any time with
+# `cloudflared tunnel list`.
+#
+# You may also put the tunnel NAME here instead of the UUID, but the UUID never
+# changes and never collides, so use the UUID.
+tunnel: <REPLACE-ME-TUNNEL-UUID>
+
+# --- Where the tunnel's private key lives ------------------------------------
+# `cloudflared tunnel create` writes this JSON file into ~/.cloudflared/ under
+# the account that ran the command. Because cloudflared runs as a system
+# service (as root, not as you), the file has to be copied somewhere the
+# service can read — /etc/cloudflared/ is the conventional home.
+#
+# The filename is the tunnel UUID with .json on the end. Use the same UUID as
+# the line above.
+#
+# THIS FILE IS A SECRET. Anyone holding it can impersonate your tunnel. It must
+# be mode 0600 and owned by root, and it must never be committed to git.
+credentials-file: /etc/cloudflared/<REPLACE-ME-TUNNEL-UUID>.json
+
+
+# --- Operational settings ----------------------------------------------------
+# Where cloudflared writes its own log level. "info" is right for normal
+# running; switch to "debug" only while diagnosing a connection problem.
+loglevel: info
+
+# Send cloudflared's metrics to a loopback-only port. Optional, but it gives
+# you `curl http://127.0.0.1:20241/metrics` as a health check that does not
+# involve the internet at all.
+metrics: 127.0.0.1:20241
+
+# Keep four connections open to four different Cloudflare edge servers, so a
+# single edge going away does not interrupt anyone's file transfer.
+protocol: quic
+retries: 5
+
+
+# --- Ingress rules -----------------------------------------------------------
+# Rules are evaluated top to bottom; the FIRST match wins. The last rule must
+# have no hostname — it is the catch-all, and cloudflared refuses to start
+# without one.
+ingress:
+
+  # Rule 1 — the real thing.
+  #
+  # Requests arriving at https://cloud.example.com are handed to the
+  # GoldenCloud server listening on the loopback interface of this same
+  # machine. Cloudflare has already terminated HTTPS at its edge, so this hop
+  # is plain HTTP — which is fine, because it never leaves the machine.
+  #
+  # <REPLACE-ME-HOSTNAME> is the hostname staff will use, e.g. cloud.example.com.
+  # It must be a hostname on a domain that is already in your Cloudflare
+  # account. `cloudflared tunnel route dns` (see RUNBOOK.md) creates the DNS
+  # record that points it here.
+  #
+  # The port in the service URL MUST match the `listen` port in
+  # /etc/goldencloud/config.yaml. If they disagree, every request returns
+  # "502 Bad Gateway" and cloudflared's log says "connection refused".
+  - hostname: <REPLACE-ME-HOSTNAME>
+    service: http://127.0.0.1:8080
+    originRequest:
+      # Do not give up on a large upload. Staff copy multi-gigabyte files; the
+      # default 30 second connect timeout is fine but the stream must not be
+      # cut short.
+      connectTimeout: 30s
+      # Disable response buffering so file downloads start immediately and
+      # WebDAV's streaming behaviour is preserved.
+      noHappyEyeballs: false
+      # The origin is on loopback with no TLS, so there is no certificate to
+      # verify and no name to check. Left explicit so nobody later assumes the
+      # tunnel is validating something it is not.
+      noTLSVerify: false
+      # Keep connections warm between requests. WebDAV is chatty — a file
+      # listing is many small requests — and this measurably speeds it up.
+      keepAliveConnections: 16
+      keepAliveTimeout: 90s
+      # Pass the original Host header through. Some WebDAV clients build
+      # absolute URLs from it.
+      httpHostHeader: <REPLACE-ME-HOSTNAME>
+
+  # Rule 2 (OPTIONAL) — delete this block unless you need it.
+  #
+  # A second hostname pointing at the same server, for example if you want both
+  # cloud.example.com and files.example.com to work. Each extra hostname also
+  # needs its own `cloudflared tunnel route dns` command.
+  #
+  #- hostname: <REPLACE-ME-SECOND-HOSTNAME>
+  #  service: http://127.0.0.1:8080
+
+  # Rule 3 — the catch-all. REQUIRED. Must be last, and must have no hostname.
+  #
+  # Anything that reaches this tunnel without matching a rule above gets a bare
+  # 404. This matters more than it looks: your tunnel is reachable from the
+  # whole internet, and scanners will probe it. Without this rule cloudflared
+  # will not start at all; with it, anything unexpected is answered with
+  # "nothing here" rather than being forwarded somewhere it should not go.
+  #
+  # Do NOT change this to a service that actually serves something. This is the
+  # rule that stops a mis-typed hostname quietly exposing your file server.
+  - service: http_status:404

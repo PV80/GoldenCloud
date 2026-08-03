@@ -1,0 +1,206 @@
+# GoldenCloud WebDAV server — systemd unit
+#
+# Install with:
+#   sudo install -o root -g root -m 0644 goldencloud.service \
+#        /etc/systemd/system/goldencloud.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now goldencloud
+#
+# Every hardening line below is commented with what it stops. If you need to
+# change one, change it here and re-run `systemctl daemon-reload` — do not edit
+# the copy in /lib or /usr, and prefer `systemctl edit goldencloud` for local
+# overrides so an upgrade does not stamp on your changes.
+#
+# Full context: deploy/RUNBOOK.md
+
+[Unit]
+Description=GoldenCloud private WebDAV drive
+Documentation=https://github.com/PV80/GoldenCloud/blob/main/deploy/RUNBOOK.md
+
+# --- Storage dependency -----------------------------------------------------
+# The single most important thing in this file.
+#
+# If the WD share is not mounted, /mnt/wd is an ordinary empty directory on the
+# Pi's SD card. Starting the server against it would silently create empty user
+# folders in the wrong place: staff would sign in, see an empty drive, save work
+# into it, and lose that work the moment the real share came back. That failure
+# looks like working software, which makes it the worst kind of failure.
+#
+# RequiresMountsFor= makes systemd work out which mount unit covers this path
+# (here: mnt-wd.mount, generated from the /etc/fstab line) and adds both a
+# Requires= and an After= on it. The explicit lines below say the same thing
+# again by name, so that anyone reading this file can see the dependency
+# without having to know that rule.
+#
+# Note on x-systemd.automount: the fstab entry uses an automount so that a slow
+# or absent WD unit can never hang the boot. Requires=mnt-wd.mount asks for the
+# REAL mount, not just the automount trigger, which matters because the
+# ReadWritePaths= line further down is evaluated when this service's private
+# mount namespace is built. If /mnt/wd were still an unrequested autofs
+# placeholder at that moment, the service would get a namespace pointing at
+# nothing. Requiring the real mount removes that race.
+RequiresMountsFor=/mnt/wd
+Requires=mnt-wd.mount
+After=mnt-wd.mount
+
+# --- Network dependency -----------------------------------------------------
+# The server binds to loopback, so it does not strictly need the network to be
+# up. Ordering after network-online.target simply avoids a burst of confusing
+# restarts during early boot. Wants= (not Requires=) so a machine with no
+# network still starts the service rather than sitting there refusing to.
+Wants=network-online.target
+After=network-online.target
+
+# --- Restart rate limiting --------------------------------------------------
+# If the service dies more than 5 times in 5 minutes, stop trying and leave it
+# failed. Without this, a permanently broken config produces an infinite
+# restart loop that fills the journal and hides the original error.
+# Recover with: sudo systemctl reset-failed goldencloud && sudo systemctl start goldencloud
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+
+# --- Identity ---------------------------------------------------------------
+# A dedicated system account with no login shell and no home directory. It owns
+# nothing except the storage root and can read the config. If the server
+# process is ever compromised, the attacker lands as this account, not as root.
+User=goldencloud
+Group=goldencloud
+
+ExecStart=/usr/local/bin/goldencloud serve --config /etc/goldencloud/config.yaml
+
+# Reload the user database without dropping connections:
+#   sudo systemctl reload goldencloud
+ExecReload=/bin/kill -HUP $MAINPID
+
+# --- Restart policy ---------------------------------------------------------
+# on-failure, not always: a clean exit (for example after `systemctl stop`) is
+# respected. A crash, a panic, or a non-zero exit is retried.
+Restart=on-failure
+# Wait 5 seconds between attempts. Long enough that a flapping NAS does not
+# produce a restart storm, short enough that a transient blip self-heals before
+# anyone notices.
+RestartSec=5s
+# Uncomment on systemd 254 or newer for exponential backoff (5s, 10s, 20s, 40s,
+# 60s...). Raspberry Pi OS Bookworm ships systemd 252, where these two keys are
+# unknown and will make the unit fail to load — hence commented out.
+#RestartSteps=4
+#RestartMaxDelaySec=60s
+
+# Give the server 20 seconds to finish in-flight uploads on shutdown before
+# systemd kills it. A staff member copying a large file gets to finish.
+TimeoutStopSec=20s
+KillSignal=SIGTERM
+
+# --- Filesystem hardening ---------------------------------------------------
+
+# The storage root, and nothing else, is writable. This is the one path the
+# server has any business changing. Declared as /mnt/wd (the whole mount)
+# rather than /mnt/wd/goldencloud so that the unit keeps working if you move
+# the storage root to another folder on the same share; narrow it to the exact
+# storage_root from config.yaml if you want to be stricter.
+ReadWritePaths=/mnt/wd
+
+# Everything else on the system — /usr, /boot, /efi, and all of /etc — becomes
+# read-only inside this service's view of the filesystem. Even if an attacker
+# gets code execution as the goldencloud user, they cannot drop a binary in
+# /usr/local/bin or edit /etc/passwd. Note this also protects
+# /etc/goldencloud/users.yaml from being rewritten by the server process; only
+# the admin CLI, run by you with sudo, changes that file.
+ProtectSystem=strict
+
+# /home, /root and /run/user are invisible. Staff files live on the WD share,
+# never in a home directory, so the server has no reason to look there.
+ProtectHome=yes
+
+# A private /tmp that disappears when the service stops, so temporary files
+# cannot be read by other users or left behind to accumulate.
+PrivateTmp=yes
+
+# No access to physical devices beyond the harmless pseudo-devices (/dev/null,
+# /dev/zero, /dev/urandom). Blocks reading raw disks.
+PrivateDevices=yes
+
+# /proc shows only this service's own processes, and no other users' data.
+# Removes an easy way to enumerate what else is running on the box.
+ProtectProc=invisible
+ProcSubset=pid
+
+# Cannot alter kernel settings (sysctl), load or unload kernel modules, or read
+# the kernel ring buffer. A web server needs none of these.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+
+# Cannot escape or reconfigure its cgroup, change the system clock, or change
+# the hostname. Clock changes in particular are a classic way to confuse logs
+# and certificate validity checks.
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# --- Privilege hardening ----------------------------------------------------
+
+# The process, and anything it spawns, can never gain more privilege than it
+# starts with. This is what makes a stray setuid binary useless as an escape
+# route, and it is the single highest-value line in this block.
+NoNewPrivileges=yes
+
+# Drop every Linux capability. The server binds to port 8080, which is above
+# 1024, so it needs no special power at all — not even CAP_NET_BIND_SERVICE.
+# If you ever change `listen` to a port below 1024 you would need to add
+# AmbientCapabilities=CAP_NET_BIND_SERVICE here; don't — use the tunnel.
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Cannot create setuid or setgid files, and cannot create new namespaces.
+# Together these close the two usual routes from "code execution as an
+# unprivileged user" to "code execution as root".
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+
+# Only IPv4, IPv6 and Unix sockets. No raw sockets (packet sniffing, spoofing),
+# no netlink, no bluetooth.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# Only the CPU architecture this machine actually runs. Stops a 32-bit
+# syscall shim being used to sidestep the syscall filter below.
+SystemCallArchitectures=native
+
+# Allow the ordinary syscalls a network service needs; refuse the rest.
+# @privileged and @resources are subtracted because nothing here should be
+# changing resource limits or doing administrative operations.
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+# Blocked calls return "permission denied" rather than killing the process, so
+# an unexpected block shows up as a clean error in the log instead of a
+# mysterious SIGSYS crash.
+SystemCallErrorNumber=EPERM
+
+# Cannot switch to a different security-module personality (a way of asking for
+# legacy kernel behaviour), and cannot map memory that is both writable and
+# executable. Go does not generate code at runtime, so this costs nothing and
+# blocks a whole class of exploit.
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+# Clean up any System V IPC objects left behind when the service stops.
+RemoveIPC=yes
+
+# --- Resource limits --------------------------------------------------------
+# Plenty of file descriptors for concurrent transfers, but a ceiling so a
+# descriptor leak cannot take the whole machine down with it.
+LimitNOFILE=8192
+# A hard ceiling on processes, so a fork bomb in a compromised process is
+# contained to this service.
+TasksMax=256
+
+# --- Logging ----------------------------------------------------------------
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=goldencloud
+
+[Install]
+WantedBy=multi-user.target

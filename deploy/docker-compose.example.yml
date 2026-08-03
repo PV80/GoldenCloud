@@ -1,0 +1,138 @@
+# =============================================================================
+# GoldenCloud — example Docker Compose deployment
+# =============================================================================
+#
+# Copy to docker-compose.yml, edit the paths, then:
+#
+#     docker compose up -d
+#     docker compose logs -f goldencloud
+#
+# THIS IS NOT THE SUPPORTED PRODUCTION SETUP. The Raspberry Pi deployment in
+# deploy/RUNBOOK.md uses systemd and is what the runbook, the troubleshooting
+# section, and the support burden assume. Use this file if you already run
+# Docker on a mini-PC or NAS and would rather keep everything in one place, or
+# to stand up a throwaway server for docs/CLIENT-TEST.md.
+#
+# Read this before you start:
+#
+#   Inside a container, 127.0.0.1 means "this container", not "this machine".
+#   So the loopback-only default in goldencloud.example.yaml cannot work here.
+#   The config mounted below must use listen: "0.0.0.0:8080", and you MUST put
+#   something in front that terminates HTTPS — the cloudflared service below,
+#   or your own reverse proxy. Publishing 0.0.0.0:8080 to your LAN with nothing
+#   in front puts staff passwords on the office network in the clear.
+# =============================================================================
+
+services:
+
+  goldencloud:
+    build:
+      # Build context is the repository root, one level up from this file.
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        VERSION: dev
+    image: goldencloud:local
+    container_name: goldencloud
+    restart: unless-stopped
+
+    # Run as the distroless nonroot account. Anything under ./storage on the
+    # host must be owned by this UID:GID, or the server cannot write:
+    #     sudo mkdir -p ./storage
+    #     sudo chown -R 65532:65532 ./storage
+    user: "65532:65532"
+
+    volumes:
+      # Config and user database, read-only. The server only reads them; the
+      # admin CLI (run separately, see below) writes users.yaml.
+      - ./config:/etc/goldencloud:ro
+      # Staff files. Replace ./storage with the real path to your mounted WD
+      # share if you have one, e.g. /mnt/wd/goldencloud:/srv/goldencloud
+      - ./storage:/srv/goldencloud
+
+    # NOTE: no `ports:` mapping on purpose. Nothing outside the Docker network
+    # reaches this container. cloudflared below reaches it by service name.
+    # If you must expose it for local testing, bind to loopback only:
+    #   ports:
+    #     - "127.0.0.1:8080:8080"
+    expose:
+      - "8080"
+
+    # Same hardening ideas as the systemd unit, expressed in Compose terms.
+    read_only: true            # container filesystem is immutable
+    tmpfs:
+      - /tmp:size=64m          # ...except a small private /tmp
+    cap_drop:
+      - ALL                    # no Linux capabilities at all
+    security_opt:
+      - no-new-privileges:true # cannot gain privilege, ever
+
+    healthcheck:
+      # The server answers 401 on / when it is healthy — it is alive and asking
+      # for credentials. There is no shell in the image, so this uses the
+      # binary's own version subcommand as a liveness probe instead.
+      test: ["CMD", "/usr/local/bin/goldencloud", "version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ---------------------------------------------------------------------------
+  # Cloudflare Tunnel. Optional but strongly recommended — it is what makes the
+  # service reachable over HTTPS without opening a single port.
+  #
+  # This uses a token-based (remotely-managed) tunnel, which is the simplest
+  # thing that works in Compose. Create it in the Cloudflare Zero Trust
+  # dashboard: Networks -> Tunnels -> Create a tunnel -> Cloudflared, then copy
+  # the token. Add a public hostname routing cloud.example.com to
+  # http://goldencloud:8080.
+  #
+  # Put the token in a .env file next to this one (and gitignore it):
+  #     CLOUDFLARE_TUNNEL_TOKEN=eyJhIjoi...
+  # ---------------------------------------------------------------------------
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: goldencloud-tunnel
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?set CLOUDFLARE_TUNNEL_TOKEN in .env}
+    depends_on:
+      - goldencloud
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# =============================================================================
+# Managing users with the containerised server
+# =============================================================================
+#
+# The admin CLI needs to WRITE users.yaml, but the config volume above is
+# mounted read-only for the running server. Run the CLI as a one-off container
+# with the same volume mounted writable:
+#
+#   docker compose run --rm --user 0:0 \
+#     -v "$PWD/config:/etc/goldencloud" \
+#     goldencloud user add --config /etc/goldencloud/config.yaml alice
+#
+#   docker compose run --rm \
+#     goldencloud user list --config /etc/goldencloud/config.yaml
+#
+# Then tell the running server to re-read the file without dropping anyone's
+# transfer:
+#
+#   docker compose kill -s HUP goldencloud
+#
+# =============================================================================
