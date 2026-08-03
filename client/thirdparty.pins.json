@@ -1,0 +1,30 @@
+{
+  "$comment": [
+    "Pinned third-party binaries fetched at build time by thirdparty.ps1.",
+    "They are NOT committed: rclone.exe is ~60 MB and the WinFsp MSI is ~2 MB,",
+    "and neither belongs in a source repository.",
+    "",
+    "sha256 is the SHA256 of the downloaded artefact, lower-case hex.",
+    "An empty sha256 means 'not yet pinned': the build still succeeds, but it",
+    "prints a loud warning containing the hash it actually saw, so a human can",
+    "paste it in here once, from a machine with network access. See",
+    "client/thirdparty/README.md."
+  ],
+  "rclone": {
+    "version": "1.68.2",
+    "url": "https://downloads.rclone.org/v1.68.2/rclone-v1.68.2-windows-amd64.zip",
+    "sha256": "",
+    "archive": "zip",
+    "entry": "rclone.exe",
+    "target": "rclone.exe",
+    "licenseEntry": "COPYING",
+    "licenseTarget": "rclone-LICENSE.txt"
+  },
+  "winfsp": {
+    "version": "2.0.23075",
+    "url": "https://github.com/winfsp/winfsp/releases/download/v2.0/winfsp-2.0.23075.msi",
+    "sha256": "",
+    "archive": "none",
+    "target": "winfsp.msi"
+  }
+}
