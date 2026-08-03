@@ -15,12 +15,14 @@ import (
 	"io"
 	"math"
 	"net"
+	"net/netip"
 	"os"
 	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/yaml.v3"
@@ -33,6 +35,25 @@ const DefaultListen = "127.0.0.1:8080"
 
 // DefaultLogLevel is used when log_level is unset.
 const DefaultLogLevel = "info"
+
+// DefaultTrustedProxyHeader is the header consulted for the client address when
+// trusted_proxy is enabled and no header is named.
+const DefaultTrustedProxyHeader = "X-Forwarded-For"
+
+// TrustedProxy tells the server it sits behind a reverse proxy that has already
+// terminated TLS. It is the explicit opt-in required by D-003.
+type TrustedProxy struct {
+	// Enabled allows plaintext HTTP on a non-loopback listen address and makes
+	// the server believe Header for the client's address.
+	Enabled bool `yaml:"enabled"`
+	// Header carries the client address. Usually X-Forwarded-For; Cloudflare
+	// also sends CF-Connecting-IP.
+	Header string `yaml:"header"`
+	// AllowedCIDRs are the networks the proxy itself connects from. Header is
+	// only believed when the peer is inside one of them, because otherwise any
+	// client could choose its own apparent address.
+	AllowedCIDRs []string `yaml:"allowed_cidrs"`
+}
 
 // TLS holds the direct-TLS settings. In the supported deployment TLS is
 // terminated by Cloudflare and this stays disabled.
@@ -52,13 +73,12 @@ type Config struct {
 	UsersFile string `yaml:"users_file"`
 	// LogLevel is one of debug, info, warn, error.
 	LogLevel string `yaml:"log_level"`
-	// RequireMountpoint makes the server refuse to start unless StorageRoot is
-	// a mountpoint. See D-008: without it, a missing SMB share silently turns
-	// into data written to the Pi's SD card.
+	// RequireMountpoint makes the server refuse to start unless StorageRoot
+	// lives on a filesystem of its own rather than on the root filesystem.
+	// See D-008 and D-014.
 	RequireMountpoint bool `yaml:"require_mountpoint"`
-	// TrustedProxy asserts that a reverse proxy in front of the server
-	// terminates TLS. It is the explicit opt-in required by D-003.
-	TrustedProxy bool `yaml:"trusted_proxy"`
+	// TrustedProxy configures a reverse proxy in front of the server.
+	TrustedProxy TrustedProxy `yaml:"trusted_proxy"`
 	// TLS configures direct TLS termination by the server itself.
 	TLS TLS `yaml:"tls"`
 
@@ -69,13 +89,13 @@ type Config struct {
 // fileConfig mirrors Config but distinguishes "absent" from "false"/"" so that
 // defaults can be applied only to fields the operator did not set.
 type fileConfig struct {
-	Listen            *string `yaml:"listen"`
-	StorageRoot       *string `yaml:"storage_root"`
-	UsersFile         *string `yaml:"users_file"`
-	LogLevel          *string `yaml:"log_level"`
-	RequireMountpoint *bool   `yaml:"require_mountpoint"`
-	TrustedProxy      *bool   `yaml:"trusted_proxy"`
-	TLS               *TLS    `yaml:"tls"`
+	Listen            *string       `yaml:"listen"`
+	StorageRoot       *string       `yaml:"storage_root"`
+	UsersFile         *string       `yaml:"users_file"`
+	LogLevel          *string       `yaml:"log_level"`
+	RequireMountpoint *bool         `yaml:"require_mountpoint"`
+	TrustedProxy      *TrustedProxy `yaml:"trusted_proxy"`
+	TLS               *TLS          `yaml:"tls"`
 }
 
 // Load reads, defaults and validates the server configuration at path.
@@ -97,10 +117,15 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	c := &Config{
-		Listen:            DefaultListen,
-		LogLevel:          DefaultLogLevel,
-		RequireMountpoint: true,
-		Path:              configPath,
+		Listen:   DefaultListen,
+		LogLevel: DefaultLogLevel,
+		Path:     configPath,
+		// D-014: default off. The systemd unit hard-requires the mount unit
+		// (D-011), and with storage_root a sub-folder of the mount (D-010) an
+		// unmounted share already fails the "storage_root does not exist"
+		// check. Requiring a dedicated filesystem is an extra belt for
+		// operators who want it, not the default.
+		TrustedProxy: TrustedProxy{Header: DefaultTrustedProxyHeader},
 	}
 	if fc.Listen != nil {
 		c.Listen = *fc.Listen
@@ -119,6 +144,9 @@ func Load(configPath string) (*Config, error) {
 	}
 	if fc.TrustedProxy != nil {
 		c.TrustedProxy = *fc.TrustedProxy
+		if c.TrustedProxy.Header == "" {
+			c.TrustedProxy.Header = DefaultTrustedProxyHeader
+		}
 	}
 	if fc.TLS != nil {
 		c.TLS = *fc.TLS
@@ -171,8 +199,22 @@ func (c *Config) validate(doc *yaml.Node) error {
 		}
 	}
 
+	if c.TrustedProxy.Enabled {
+		if len(c.TrustedProxy.AllowedCIDRs) == 0 {
+			return fail("trusted_proxy.allowed_cidrs",
+				"must not be empty when trusted_proxy.enabled is true: without it "+
+					"any client could forge its own apparent address in the %q header "+
+					"and defeat rate limiting", c.TrustedProxy.Header)
+		}
+		for _, cidr := range c.TrustedProxy.AllowedCIDRs {
+			if _, err := netip.ParsePrefix(cidr); err != nil {
+				return fail("trusted_proxy.allowed_cidrs", "%q is not a CIDR range (want something like 127.0.0.1/32): %v", cidr, err)
+			}
+		}
+	}
+
 	// D-003. Basic credentials must never cross a network in the clear.
-	if !c.TLS.Enabled && !c.TrustedProxy && !isLoopbackAddr(c.Listen) {
+	if !c.TLS.Enabled && !c.TrustedProxy.Enabled && !isLoopbackAddr(c.Listen) {
 		return fail("listen",
 			"refusing to start: %q is not a loopback address and neither tls.enabled "+
 				"nor trusted_proxy is set, so HTTP Basic passwords would cross the "+
@@ -472,6 +514,11 @@ func SaveUsers(path string, users []User) error {
 		return fmt.Errorf("refusing to write an invalid users file: %w", err)
 	}
 
+	// A fresh file is private to its owner. An existing one keeps the mode and
+	// ownership the operator gave it — deploy/RUNBOOK.md sets 0640
+	// root:goldencloud so the server, which runs as goldencloud, can read a
+	// file only root can write. Forcing 0600 here would lock the server out of
+	// its own user list the first time an admin ran "user add".
 	return writeFileAtomic(path, buf.Bytes(), 0o600)
 }
 
@@ -487,8 +534,20 @@ func writeFileAtomic(dst string, data []byte, perm os.FileMode) error {
 		os.Remove(tmpName) // no-op once the rename has succeeded
 	}()
 
+	uid, gid := -1, -1
+	if st, err := os.Stat(dst); err == nil {
+		perm = st.Mode().Perm()
+		if sys, ok := st.Sys().(*syscall.Stat_t); ok {
+			uid, gid = int(sys.Uid), int(sys.Gid)
+		}
+	}
 	if err := tmp.Chmod(perm); err != nil {
 		return fmt.Errorf("atomic write: %w", err)
+	}
+	if uid >= 0 && gid >= 0 {
+		// Best effort: only root can hand a file to another owner, and a
+		// non-root operator editing their own file does not need to.
+		_ = tmp.Chown(uid, gid)
 	}
 	if _, err := tmp.Write(data); err != nil {
 		return fmt.Errorf("atomic write: %w", err)

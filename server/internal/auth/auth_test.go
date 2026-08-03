@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"sort"
 	"strings"
 	"sync"
@@ -439,4 +440,76 @@ func (c *fakeClock) advance(d time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.t = c.t.Add(d)
+}
+
+func TestTrustedProxyHeaderIsOnlyBelievedFromAllowedPeers(t *testing.T) {
+	t.Parallel()
+	clock := &fakeClock{t: time.Now()}
+	// The httptest server is reached over loopback, so 127.0.0.1/32 makes the
+	// test client "the trusted proxy".
+	trusted := []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}
+	f := newFixture(t, auth.Options{
+		FailureThreshold:   1,
+		BaseDelay:          time.Minute,
+		MaxDelay:           time.Hour,
+		Now:                clock.Now,
+		TrustedProxyHeader: "X-Forwarded-For",
+		TrustedProxyCIDRs:  trusted,
+	})
+
+	fail := func(xff string) int {
+		r, _ := http.NewRequest("GET", f.srv.URL+"/", nil)
+		r.SetBasicAuth("alice", "wrong")
+		if xff != "" {
+			r.Header.Set("X-Forwarded-For", xff)
+		}
+		resp, err := http.DefaultClient.Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	// One failure attributed to 203.0.113.7 locks only that bucket.
+	if got := fail("203.0.113.7"); got != http.StatusUnauthorized {
+		t.Fatalf("first failure = %d", got)
+	}
+	if got := fail("203.0.113.7"); got != http.StatusTooManyRequests {
+		t.Fatalf("second failure from the same forwarded IP = %d, want 429", got)
+	}
+	if got := fail("198.51.100.9"); got != http.StatusUnauthorized {
+		t.Fatalf("a different forwarded IP = %d, want 401: buckets are per client address", got)
+	}
+	// The rightmost entry wins, so a client prepending its own value cannot
+	// pick someone else's bucket.
+	if got := fail("1.2.3.4, 203.0.113.7"); got != http.StatusTooManyRequests {
+		t.Fatalf("forged leading entry = %d, want 429 (rightmost entry must win)", got)
+	}
+}
+
+func TestForwardedHeaderIgnoredWithoutTrustedCIDRs(t *testing.T) {
+	t.Parallel()
+	clock := &fakeClock{t: time.Now()}
+	f := newFixture(t, auth.Options{
+		FailureThreshold: 1, BaseDelay: time.Minute, MaxDelay: time.Hour, Now: clock.Now,
+	})
+	do := func(xff string) int {
+		r, _ := http.NewRequest("GET", f.srv.URL+"/", nil)
+		r.SetBasicAuth("alice", "wrong")
+		r.Header.Set("X-Forwarded-For", xff)
+		resp, err := http.DefaultClient.Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+	if got := do("10.0.0.1"); got != http.StatusUnauthorized {
+		t.Fatalf("first = %d", got)
+	}
+	// Changing the header must not buy a fresh bucket when no proxy is trusted.
+	if got := do("10.0.0.2"); got != http.StatusTooManyRequests {
+		t.Fatalf("second with a different forged header = %d, want 429", got)
+	}
 }

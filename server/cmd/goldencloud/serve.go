@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"syscall"
@@ -24,8 +25,10 @@ const (
 	// office link is a legitimate request.
 	readHeaderTimeout = 60 * time.Second
 	idleTimeout       = 2 * time.Minute
-	shutdownGrace     = 30 * time.Second
-	maxHeaderBytes    = 1 << 20
+	// shutdownGrace must stay under the systemd unit's TimeoutStopSec (20s) or
+	// systemd would SIGKILL a shutdown that is still making progress.
+	shutdownGrace  = 15 * time.Second
+	maxHeaderBytes = 1 << 20
 )
 
 func cmdServe(args []string, s streams) int {
@@ -44,16 +47,25 @@ func cmdServe(args []string, s streams) int {
 		return fail(s, "%v", err)
 	}
 	log := newLogger(s, cfg.LogLevel)
+	log.Info("goldencloud starting", slog.String("version", version))
 
 	if err := preflight(cfg, users); err != nil {
 		return fail(s, "preflight check failed: %v", err)
 	}
+	log.Info("storage root ok", slog.String("path", cfg.StorageRoot))
+	log.Info("loaded users", slog.Int("count", len(users)))
 
+	trustedCIDRs, err := parsePrefixes(cfg.TrustedProxy.AllowedCIDRs)
+	if err != nil {
+		return fail(s, "%v", err)
+	}
 	store := auth.NewStore(users)
-	authn := auth.New(store, auth.Options{
-		TrustedProxy: cfg.TrustedProxy,
-		Logger:       log,
-	})
+	authOpts := auth.Options{Logger: log}
+	if cfg.TrustedProxy.Enabled {
+		authOpts.TrustedProxyHeader = cfg.TrustedProxy.Header
+		authOpts.TrustedProxyCIDRs = trustedCIDRs
+	}
+	authn := auth.New(store, authOpts)
 	dav := webdavx.New(webdavx.Options{StorageRoot: cfg.StorageRoot, Logger: log})
 	defer dav.Close()
 
@@ -71,19 +83,10 @@ func cmdServe(args []string, s streams) int {
 		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelDebug),
 	}
 
-	// Announce the bound address on stdout. With listen: 127.0.0.1:0 this is
-	// the only way to learn the port, which the integration suite relies on.
-	fmt.Fprintf(s.out, "listening on %s\n", addr)
-	if f, ok := s.out.(interface{ Sync() error }); ok {
-		_ = f.Sync()
-	}
-	log.Info("goldencloud started",
-		slog.String("version", version),
+	log.Info("listening",
 		slog.String("addr", addr),
-		slog.String("storage_root", cfg.StorageRoot),
-		slog.Int("users", len(users)),
 		slog.Bool("tls", cfg.TLS.Enabled),
-		slog.Bool("trusted_proxy", cfg.TrustedProxy))
+		slog.Bool("trusted_proxy", cfg.TrustedProxy.Enabled))
 
 	serveErr := make(chan error, 1)
 	go func() {
@@ -171,13 +174,16 @@ func preflight(cfg *config.Config, users []config.User) error {
 	}
 
 	if cfg.RequireMountpoint {
-		mounted, err := isMountpoint(cfg.StorageRoot)
+		// D-010 puts storage_root inside the mount (/mnt/wd/goldencloud) rather
+		// than at it, so the check is "does this live on a filesystem of its
+		// own" rather than "is this exactly a mountpoint".
+		mp, err := nearestMountpoint(cfg.StorageRoot)
 		if err != nil {
-			return fmt.Errorf("checking whether %s is a mountpoint: %w", cfg.StorageRoot, err)
+			return fmt.Errorf("checking which filesystem %s is on: %w", cfg.StorageRoot, err)
 		}
-		if !mounted {
+		if mp == string(os.PathSeparator) {
 			return fmt.Errorf(
-				"storage_root %s is not a mountpoint, but require_mountpoint is set. "+
+				"storage_root %s is on the root filesystem, but require_mountpoint is set. "+
 					"The share is probably not mounted: writing here would put everyone's "+
 					"files on the local disk instead. Mount it (see deploy/RUNBOOK.md), or "+
 					"set require_mountpoint: false if the storage really is a local directory",
@@ -204,6 +210,21 @@ func preflight(cfg *config.Config, users []config.User) error {
 		}
 	}
 	return nil
+}
+
+// parsePrefixes converts the configured CIDR strings. config.Load has already
+// validated them; this turns a configuration error into a startup error rather
+// than a panic if that ever stops being true.
+func parsePrefixes(cidrs []string) ([]netip.Prefix, error) {
+	out := make([]netip.Prefix, 0, len(cidrs))
+	for _, c := range cidrs {
+		p, err := netip.ParsePrefix(c)
+		if err != nil {
+			return nil, fmt.Errorf("trusted_proxy.allowed_cidrs: %q: %w", c, err)
+		}
+		out = append(out, p)
+	}
+	return out, nil
 }
 
 func newLogger(s streams, level string) *slog.Logger {

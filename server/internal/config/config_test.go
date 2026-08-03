@@ -34,11 +34,14 @@ func TestLoadServerDefaults(t *testing.T) {
 	if c.LogLevel != "info" {
 		t.Errorf("LogLevel = %q, want info", c.LogLevel)
 	}
-	if !c.RequireMountpoint {
-		t.Errorf("RequireMountpoint = false, want true by default (D-008)")
+	if c.RequireMountpoint {
+		t.Errorf("RequireMountpoint = true, want false by default (D-014)")
 	}
-	if c.TLS.Enabled || c.TrustedProxy {
+	if c.TLS.Enabled || c.TrustedProxy.Enabled {
 		t.Errorf("TLS/TrustedProxy should default to false")
+	}
+	if c.TrustedProxy.Header != config.DefaultTrustedProxyHeader {
+		t.Errorf("TrustedProxy.Header = %q, want %q", c.TrustedProxy.Header, config.DefaultTrustedProxyHeader)
 	}
 }
 
@@ -110,7 +113,7 @@ func TestD003NonLoopbackRequiresExplicitOptIn(t *testing.T) {
 				body += "tls:\n  enabled: true\n  cert_file: \"" + cert + "\"\n  key_file: \"" + key + "\"\n"
 			}
 			if tc.trustedProxy {
-				body += "trusted_proxy: true\n"
+				body += "trusted_proxy:\n  enabled: true\n  header: \"X-Forwarded-For\"\n  allowed_cidrs: [\"127.0.0.1/32\"]\n"
 			}
 			p := write(t, dir, "server.yaml", body)
 			_, err := config.Load(p)
@@ -126,6 +129,62 @@ func TestD003NonLoopbackRequiresExplicitOptIn(t *testing.T) {
 				t.Errorf("refusal should name the listen field, got: %v", err)
 			}
 		})
+	}
+}
+
+func TestTrustedProxyRequiresAllowedCIDRs(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	users := write(t, dir, "users.yaml", "users: []\n")
+	p := write(t, dir, "server.yaml",
+		"listen: \"0.0.0.0:8080\"\nstorage_root: \""+dir+"\"\nusers_file: \""+users+"\"\n"+
+			"trusted_proxy:\n  enabled: true\n  header: \"X-Forwarded-For\"\n  allowed_cidrs: []\n")
+	_, err := config.Load(p)
+	if err == nil || !strings.Contains(err.Error(), "allowed_cidrs") {
+		t.Fatalf("want allowed_cidrs error, got %v", err)
+	}
+}
+
+func TestTrustedProxyRejectsBadCIDR(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	users := write(t, dir, "users.yaml", "users: []\n")
+	p := write(t, dir, "server.yaml",
+		"listen: \"127.0.0.1:8080\"\nstorage_root: \""+dir+"\"\nusers_file: \""+users+"\"\n"+
+			"trusted_proxy:\n  enabled: true\n  allowed_cidrs: [\"not-a-cidr\"]\n")
+	_, err := config.Load(p)
+	if err == nil || !strings.Contains(err.Error(), "not-a-cidr") {
+		t.Fatalf("want CIDR error, got %v", err)
+	}
+}
+
+// The example config shipped in deploy/ must load. It is what every operator
+// copies, and a server that cannot read its own documented configuration is
+// worse than no example at all.
+func TestShippedExampleConfigLoads(t *testing.T) {
+	t.Parallel()
+	raw, err := os.ReadFile("../../../deploy/goldencloud.example.yaml")
+	if err != nil {
+		t.Skipf("deploy/goldencloud.example.yaml not present: %v", err)
+	}
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "storage")
+	if err := os.Mkdir(storage, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	users := write(t, dir, "users.yaml", "users: []\n")
+	body := strings.ReplaceAll(string(raw), "/mnt/wd/goldencloud", storage)
+	body = strings.ReplaceAll(body, "/etc/goldencloud/users.yaml", users)
+	p := write(t, dir, "config.yaml", body)
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatalf("the shipped example config does not load: %v", err)
+	}
+	if cfg.Listen != "127.0.0.1:8080" {
+		t.Errorf("example listen = %q", cfg.Listen)
+	}
+	if cfg.TrustedProxy.Enabled || cfg.TLS.Enabled {
+		t.Errorf("the example config should ship with tls and trusted_proxy disabled")
 	}
 }
 

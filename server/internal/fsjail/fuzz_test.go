@@ -22,7 +22,7 @@ func FuzzJailEscape(f *testing.F) {
 	}
 	for _, seed := range []string{
 		"", "/", ".", "..", "...", "/a", "a/b/c",
-		"/‮/secret.txt", "/．．/secret.txt",
+		"/\u202e/secret.txt", "/\uff0e\uff0e/secret.txt",
 		"/%00", "/a%2fb", "/.git/config", "/~/.ssh/id_rsa",
 		"/a/./././../../../secret.txt", strings.Repeat("/..", 64),
 	} {

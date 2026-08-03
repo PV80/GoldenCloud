@@ -17,8 +17,9 @@ import (
 
 // bcryptCost is the work factor for new passwords. 12 is roughly a quarter of a
 // second on a Raspberry Pi 5, which is a tolerable login cost and an
-// intolerable brute-force cost.
-const bcryptCost = 12
+// intolerable brute-force cost. It is a var only so the tests can turn it down;
+// nothing at runtime changes it.
+var bcryptCost = 12
 
 const (
 	minPasswordLen = 8

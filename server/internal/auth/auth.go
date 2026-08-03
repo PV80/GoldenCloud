@@ -22,6 +22,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -119,11 +120,13 @@ type Options struct {
 	BaseDelay time.Duration
 	// MaxDelay caps the exponential backoff.
 	MaxDelay time.Duration
-	// TrustedProxy makes the middleware take the client address from the
-	// rightmost X-Forwarded-For entry. Only set this when a proxy you control
-	// is the only way to reach the listener; otherwise a client can pick its
-	// own rate-limit bucket.
-	TrustedProxy bool
+	// TrustedProxyHeader names the header carrying the real client address
+	// (e.g. X-Forwarded-For). Empty disables forwarded-address handling.
+	TrustedProxyHeader string
+	// TrustedProxyCIDRs are the networks a trusted proxy connects from. The
+	// header is believed only when the peer is inside one of them; otherwise
+	// any client could pick its own rate-limit bucket.
+	TrustedProxyCIDRs []netip.Prefix
 	// DummyHash is compared against when the username is unknown, to equalise
 	// response time. It must have the same bcrypt cost as real passwords.
 	DummyHash []byte
@@ -284,19 +287,41 @@ func basicCredentials(header string) (username, password string, wellFormed bool
 
 // clientIP returns the address used to bucket rate limiting.
 func (a *Authenticator) clientIP(r *http.Request) string {
-	if a.opt.TrustedProxy {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			parts := strings.Split(xff, ",")
-			// The rightmost entry is the one appended by the nearest proxy,
-			// which is the only one a client cannot forge.
-			if ip := strings.TrimSpace(parts[len(parts)-1]); ip != "" {
-				return ip
-			}
+	peer := peerHost(r.RemoteAddr)
+	if a.opt.TrustedProxyHeader == "" || len(a.opt.TrustedProxyCIDRs) == 0 {
+		return peer
+	}
+	addr, err := netip.ParseAddr(peer)
+	if err != nil || !a.peerIsTrusted(addr) {
+		return peer
+	}
+	fwd := r.Header.Get(a.opt.TrustedProxyHeader)
+	if fwd == "" {
+		return peer
+	}
+	// The rightmost entry is the one appended by the nearest proxy, which is
+	// the only one a client cannot forge by sending the header itself.
+	parts := strings.Split(fwd, ",")
+	if ip := strings.TrimSpace(parts[len(parts)-1]); ip != "" {
+		return ip
+	}
+	return peer
+}
+
+func (a *Authenticator) peerIsTrusted(addr netip.Addr) bool {
+	addr = addr.Unmap()
+	for _, p := range a.opt.TrustedProxyCIDRs {
+		if p.Contains(addr) {
+			return true
 		}
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	return false
+}
+
+func peerHost(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		return remoteAddr
 	}
 	return host
 }

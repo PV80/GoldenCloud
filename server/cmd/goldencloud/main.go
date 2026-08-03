@@ -20,7 +20,7 @@ import (
 var version = "dev"
 
 // DefaultConfigPath is where the systemd unit in deploy/ puts the config.
-const DefaultConfigPath = "/etc/goldencloud/goldencloud.yaml"
+const DefaultConfigPath = "/etc/goldencloud/config.yaml"
 
 // streams lets every command be driven from a test without touching the real
 // process streams.

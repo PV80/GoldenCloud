@@ -12,6 +12,14 @@ import (
 	"github.com/PV80/GoldenCloud/server/internal/config"
 )
 
+// TestMain turns the bcrypt work factor down for the suite. Hashing a dozen
+// passwords at the production cost of 12 costs half a minute of CI time and
+// proves nothing that cost 4 does not.
+func TestMain(m *testing.M) {
+	bcryptCost = bcrypt.MinCost
+	os.Exit(m.Run())
+}
+
 type result struct {
 	code   int
 	stdout string
@@ -402,20 +410,42 @@ func TestPreflightStorageRootIsAFile(t *testing.T) {
 	}
 }
 
-// D-008: a temp directory is never a mountpoint, so requiring one must fail
-// loudly rather than silently writing to the wrong disk.
+// D-008/D-014: when require_mountpoint is set and the storage lives on the root
+// filesystem, the share is not mounted and the server must refuse to start
+// rather than silently fill the local disk.
 func TestPreflightRequiresMountpoint(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	mp, err := nearestMountpoint(dir)
+	if err != nil {
+		t.Fatalf("nearestMountpoint: %v", err)
+	}
+	if mp != "/" {
+		t.Skipf("this machine's temp directory is already on a dedicated filesystem (%s)", mp)
+	}
 	cfg := &config.Config{StorageRoot: dir, RequireMountpoint: true}
-	err := preflight(cfg, nil)
+	err = preflight(cfg, nil)
 	if err == nil {
-		t.Fatal("preflight passed on a non-mountpoint with require_mountpoint: true")
+		t.Fatal("preflight passed on the root filesystem with require_mountpoint: true")
 	}
 	for _, want := range []string{dir, "mount"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q should mention %q", err.Error(), want)
 		}
+	}
+}
+
+func TestNearestMountpointFindsAnAncestor(t *testing.T) {
+	t.Parallel()
+	if _, err := os.Stat("/proc/self"); err != nil {
+		t.Skip("no /proc on this machine")
+	}
+	got, err := nearestMountpoint("/proc/self/fd")
+	if err != nil {
+		t.Fatalf("nearestMountpoint: %v", err)
+	}
+	if got != "/proc" {
+		t.Fatalf("nearestMountpoint(/proc/self/fd) = %q, want /proc", got)
 	}
 }
 
@@ -449,6 +479,17 @@ func TestPreflightRejectsUserFolderThatIsAFile(t *testing.T) {
 	}
 }
 
+func TestNearestMountpointOfRoot(t *testing.T) {
+	t.Parallel()
+	got, err := nearestMountpoint("/")
+	if err != nil {
+		t.Fatalf("nearestMountpoint(/): %v", err)
+	}
+	if got != "/" {
+		t.Fatalf("nearestMountpoint(/) = %q", got)
+	}
+}
+
 func TestIsMountpointOnRoot(t *testing.T) {
 	t.Parallel()
 	ok, err := isMountpoint("/")
@@ -462,12 +503,13 @@ func TestIsMountpointOnRoot(t *testing.T) {
 
 func TestIsMountpointOnTempDir(t *testing.T) {
 	t.Parallel()
-	ok, err := isMountpoint(t.TempDir())
+	dir := t.TempDir()
+	ok, err := isMountpoint(dir)
 	if err != nil {
 		t.Fatalf("isMountpoint: %v", err)
 	}
 	if ok {
-		t.Fatal("a temp directory was reported as a mountpoint")
+		t.Fatalf("%s was reported as a mountpoint", dir)
 	}
 }
 
