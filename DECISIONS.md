@@ -470,3 +470,83 @@ or colon is invisible over WebDAV. That is a deliberate trade: those names canno
 be created or opened by a Windows client in any case, and the alternative is
 carrying an ambiguity through the one piece of code the whole security model
 rests on. Covered by `TestRejectedNames` and by `FuzzJailEscape`.
+
+---
+
+## Post-release audit findings
+
+### D-024 — KNOWN CONSTRAINT: Cloudflare caps proxied uploads at 100 MB; multi-GB uploads do not survive the tunnel yet
+
+**Context.** An external review (correctly) pointed out what neither the build
+nor the audit caught: Cloudflare enforces a maximum HTTP request body size on
+all proxied traffic — **100 MB on Free and Pro plans**, 200 MB on Business —
+answering `413 Request Entity Too Large` above it, and this applies to
+Cloudflare Tunnel hostnames. rclone's generic WebDAV backend uploads each file
+as a single `PUT`, so through the tunnel any file over the plan limit fails.
+The 1 GB integration test is real but connects directly to the Go server; no
+automated test crosses Cloudflare, so nothing in CI could have caught it.
+
+**Status.** Downloads of any size are unaffected (responses are not capped).
+Uploads over 100 MB work on the office LAN and fail over the tunnel. This
+breaks the "multi-GB streaming" requirement for remote staff and is recorded in
+`PROGRESS.md` as a blocking item for real-world deployment.
+
+**The options** (an architectural choice the project owner has to make):
+
+1. **Client-side chunking via rclone's `chunker` overlay** — wrap the WebDAV
+   remote in rclone's chunker backend so every file is stored as ≤ 95 MB
+   chunks. Self-contained, free, no server change; but files appear as chunk
+   parts to any *other* WebDAV client (macOS Finder, the `net use` fallback),
+   and a chunked store is only reassemblable by rclone.
+2. **Carry the drive over a raw TCP tunnel** — `cloudflared` can proxy
+   arbitrary TCP; the tray app would run a bundled `cloudflared access tcp`
+   forwarder and mount against `127.0.0.1`. No body-size limit applies to a
+   TCP stream. Cleanest data path; adds a second bundled binary, a second
+   process to supervise, and Cloudflare Access configuration to the runbook.
+3. **Pay Cloudflare** — Business raises the cap to 200 MB (still not
+   multi-GB); Enterprise is negotiable. Money for a limit that chunking
+   removes for free.
+
+No option is implemented yet; the decision gates it.
+
+### D-025 — A cached user handler rebuilds when the user's folder assignment changes
+
+**Context.** The external review found that `webdavx` cached per-user handlers
+by username alone. A SIGHUP reload after editing a user's `root` in
+`users.yaml` swapped the auth store but left the cached handler — which holds
+the old directory open — serving the old folder until restart. Worst case: the
+old folder is later assigned to a new user, and two users quietly share it.
+
+**Decision.** The cache entry records the absolute folder it was built for,
+and `handlerFor` compares it against the folder the *currently authenticated*
+user record resolves to, rebuilding on mismatch. Self-healing on every request
+rather than dependent on the reload path remembering to invalidate. Covered by
+`TestReloadedRootChangeTakesEffect`.
+
+### D-026 — Release artefacts are pinned to the commit the run was dispatched from
+
+**Context.** The external review caught that a dispatched release run builds
+the commit the run started on, while the release action minted the tag at the
+branch tip at *publish* time — so `v0.1.0`'s binaries embed a different
+revision than the tag names. Provenance, not correctness: the delta was
+documentation-only, this time.
+
+**Decision.** Every job in the release workflow checks out `github.sha`
+explicitly, and the release action receives `target_commitish: github.sha`, so
+a dispatched release mints its tag at exactly the commit the artefacts were
+built from. Tag-push releases are unaffected (the tag exists; the field is
+ignored). The client build now also receives the tag as its assembly version,
+so future installers stop claiming 0.1.0 forever.
+
+### D-027 — Cached third-party binaries are re-verified on every build
+
+**Context.** The external review noted `thirdparty.ps1` verified hashes only
+on fresh download; an already-present `rclone.exe` or `winfsp.msi` was trusted
+as-is. The rclone pin also covers the *zip*, so the extracted exe could never
+be re-checked against it directly.
+
+**Decision.** The WinFsp MSI is re-hashed against its pin on every build. For
+rclone, extraction writes a sidecar recording the exe's own hash and the zip
+pin it came from; later builds verify both and re-download on any mismatch.
+Behaviour verified functionally (fresh, cached, tampered-exe, tampered-msi
+scenarios) under PowerShell 7 before commit.

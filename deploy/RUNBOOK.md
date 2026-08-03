@@ -1812,6 +1812,16 @@ This is where the server becomes reachable from outside the office. Read the
 first part of [section 0](#0-how-to-read-this-runbook) again if you want the
 explanation of why this needs no router changes.
 
+> ⚠️ **Know this before you rely on the tunnel: uploads through Cloudflare are
+> capped at 100 MB per file** on the free plan (200 MB on Business). A staff
+> member saving a file *larger* than that over the tunnel gets an error;
+> smaller files, and **downloads of any size, are unaffected**, and everything
+> works without limit on the office network. This is Cloudflare's limit on all
+> traffic it proxies, not a GoldenCloud bug, and no setting on the Pi changes
+> it. If your staff routinely move multi-gigabyte files from outside the
+> office, stop here and read `DECISIONS.md` D-024 for the options before
+> going live.
+
 **112.** Add Cloudflare's software repository key:
 
 ```
