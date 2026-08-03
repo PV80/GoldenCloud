@@ -326,3 +326,139 @@ an explicit `[SupportedOSPlatform("windows")]` even though the
 non-defect, and the warnings are still visible in the build log. Promoting them
 to errors is a good first change for anyone working with an SDK to hand; it is
 recorded as such in `client/README.md`.
+
+---
+
+## Phase 1 — Server core
+
+### D-019 — `PROPFIND` with `Depth: infinity` is refused; an absent `Depth` means 1
+
+**Context.** RFC 4918 §9.1 says a server SHOULD support `Depth: infinity` on
+`PROPFIND`, but explicitly permits refusing it with `403` and a
+`DAV:propfind-finite-depth` error body. The server runs on a Raspberry Pi in
+front of a NAS share that may hold hundreds of thousands of files. One
+`PROPFIND` with infinite depth walks all of them, in one request, holding the
+result in memory before it can be written.
+
+**Decision.** Refuse it. `PROPFIND` with `Depth: infinity` returns `403` with
+
+```xml
+<D:error xmlns:D="DAV:"><D:propfind-finite-depth/></D:error>
+```
+
+and the response still carries `DAV: 1, 2, 3` so the client knows the server is
+otherwise compliant. Depth `0` and `1` are fully supported.
+
+Secondly, RFC 4918 defaults an *absent* `Depth` header to infinity. Since we
+refuse infinity, honouring that default would turn a header omission into an
+error the client cannot act on. An absent `Depth` is therefore treated as `1`,
+which is what every real client that omits it actually wants.
+
+**Consequence.** The Windows redirector, rclone, macOS Finder and `cadaver` all
+send an explicit `Depth` of `0` or `1` and are unaffected. A tool that insists
+on infinite depth gets a specific, documented, RFC-sanctioned error rather than
+a server that appears to hang. Tested in `internal/webdavx` and in the
+integration suite.
+
+### D-020 — Lock tokens are namespaced per user
+
+**Context.** Each user gets their own `webdav.NewMemLS()` (D-002's isolation
+extended to locking). But `memLS` issues tokens from a counter that starts at
+zero in every instance and emits them as bare decimal strings — so Alice's first
+lock and Bob's first lock are both the token `1`. A token minted by one user's
+lock system therefore validates against another's.
+
+No cross-user compromise follows from that on its own, because reaching another
+user's lock system requires that user's password. It is still a token collision
+in a security-relevant namespace, and the sort of thing that becomes a real bug
+the moment anything else starts keying off a token.
+
+**Decision.** Wrap each user's lock system in `scopedLS`, which prefixes every
+token with 12 random bytes generated when the lock system is created, and
+refuses any token that does not carry that prefix. Tokens become
+`opaquelocktoken:<random>-<n>`, which is also a valid Coded-URL — `memLS`'s bare
+`1` is not.
+
+**Consequence.** Presenting another user's `If:` token yields `412 Precondition
+Failed` rather than being silently accepted. Asserted directly in the
+integration suite's isolation test.
+
+### D-021 — A successful credential verification is cached for five minutes
+
+**Context.** WebDAV is stateless: the client sends `Authorization` on every
+request, and a file manager makes dozens of requests for a single user action.
+Bcrypt at cost 12 — the cost the admin CLI uses, chosen so a stolen
+`users.yaml` is expensive to attack — takes roughly a quarter of a second on a
+Raspberry Pi 5. Paying that per request makes the drive feel broken: in this
+repository's own integration suite it turned a 1.3-second test into 104 seconds.
+
+The two requirements are in direct conflict. Lowering the bcrypt cost would
+weaken the thing bcrypt is there for.
+
+**Decision.** Keep cost 12 and cache *successful* verifications for five
+minutes. The cache is indexed by an HMAC-SHA256, keyed by a random per-process
+value, over the username, the stored bcrypt hash and the offered password.
+
+Three properties fall out of that construction:
+
+- Failures are never cached, so the brute-force cost is unchanged. An attacker
+  guessing passwords pays full bcrypt for every guess, plus the backoff.
+- Changing a password changes the stored hash, which changes the index, so every
+  cached entry for that user is invalidated the instant `users.yaml` is
+  reloaded. There is no revocation delay.
+- The cache holds no password material usable outside this process: the key is
+  random and dies with the process.
+
+**Consequence.** Repeat requests cost microseconds. A password change takes
+effect on `systemctl reload goldencloud`, not five minutes later.
+`auth.Options.CredentialCacheTTL` set to a negative value disables the cache
+entirely for anyone who wants the slower, purer behaviour.
+
+### D-022 — `require_mountpoint` asks which filesystem the storage is on, and defaults to off
+
+**Context.** D-008 says the server must fail loudly rather than write to the SD
+card when the share is not mounted. D-010 then put `storage_root` *inside* the
+mount, at `/mnt/wd/goldencloud` rather than at `/mnt/wd`. A literal "is
+`storage_root` a mountpoint" check would be false in the supported deployment
+and would refuse to start every time.
+
+**Decision.** `require_mountpoint: true` means "`storage_root` must live on a
+filesystem other than the root filesystem". The check walks up from
+`storage_root` to the nearest entry in `/proc/self/mountinfo` (falling back to
+comparing device numbers with the parent) and fails if that turns out to be `/`.
+
+It defaults to **false**, because D-011 already has `goldencloud.service`
+hard-requiring `mnt-wd.mount`, and because with `storage_root` a sub-folder of
+the share an unmounted NAS already fails the "`storage_root` does not exist"
+preflight check. The flag is a second belt for operators who want one, not the
+primary guard.
+
+**Consequence.** The example config in `deploy/` does not mention the key and
+still behaves correctly. `nearestMountpoint` is Linux-only; setting
+`require_mountpoint: true` on another platform is refused with an explicit
+message rather than silently passing.
+
+### D-023 — The jail rejects backslash, colon and control characters outright
+
+**Context.** `fsjail` normalises paths before handing them to `os.Root`. Three
+byte classes are legal in a Linux filename but cannot appear in a legitimate
+filename from this system's clients, and each is a documented traversal or
+confusion vector:
+
+- **Backslash** is a path separator to every Windows client and an ordinary byte
+  to Linux. Accepting it means client and server disagree about the shape of the
+  tree — precisely the disagreement a traversal exploit needs.
+- **Colon** is the NTFS alternate-data-stream separator (`file.txt:hidden`,
+  `file.txt::$DATA`) and is illegal in Windows filenames anyway.
+- **NUL and other C0 control characters** truncate paths in C string APIs and
+  have no business in a filename.
+
+**Decision.** Reject all three with `fsjail.ErrInvalidPath` rather than trying to
+interpret them, along with paths over 4096 bytes and components over 255 bytes.
+Rejection happens before any filesystem call.
+
+**Consequence.** A Linux-created file whose name genuinely contains a backslash
+or colon is invisible over WebDAV. That is a deliberate trade: those names cannot
+be created or opened by a Windows client in any case, and the alternative is
+carrying an ambiguity through the one piece of code the whole security model
+rests on. Covered by `TestRejectedNames` and by `FuzzJailEscape`.
