@@ -664,3 +664,35 @@ server + tunnel on an always-on machine in the office (existing Windows PC
 preferred, Pi as fallback). The gap the owner feels — "the website still
 works, why add hardware?" — is real but temporary by WD's own trajectory; the
 decision trades a second, later funeral for one small always-on box now.
+
+### D-032 — The real deployment's facts, confirmed from the owner's hardware
+
+**Context.** The owner shared photos of the actual WD unit and their domain, so
+the deployment stops being hypothetical.
+
+**Recorded.**
+
+- **Device:** WD My Cloud Home, single-bay, 3 TB (P/N family WDBVXC0030). Rear
+  connectors: one Gigabit Ethernet (to the router) and one USB-A port. That USB
+  port is a *host* port — the box uses it to ingest from USB sticks; it cannot
+  make the box appear as a USB disk to a computer. Nothing in this design ever
+  plugs into it.
+- **Topology, as designed and now confirmed feasible:** the WD unit keeps its
+  one ethernet cable to the router, untouched. The Pi plugs into the router
+  too. They meet over the office network via the WD Local Access (SMB) share —
+  no direct cable between Pi and WD exists or is possible, and none is needed.
+  If router ports run short, any small gigabit switch (or Wi-Fi for the Pi,
+  though wired is preferred) solves it.
+- **Domain (gate 1, part-answered):** the owner already owns
+  `goldenivyinvestments.com`. Remaining for gate 1: add the domain to a free
+  Cloudflare account and point its nameservers there. Note for care: if the
+  domain already carries a website or email, Cloudflare's import copies the
+  existing DNS records — hosting and email stay where they are; only the
+  address book moves.
+- **Gate 2, now decidable:** the staff hostname will be
+  `cloud.goldenivyinvestments.com` pending the owner's nod, and
+  `GOLDENCLOUD_SERVER_URL=https://cloud.goldenivyinvestments.com` is the value
+  to set before cutting the configured release.
+
+Device serial, MAC and the printed claim code are deliberately **not** recorded
+here — this repository is public.
