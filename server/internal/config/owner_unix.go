@@ -3,6 +3,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"syscall"
 )
@@ -21,4 +22,18 @@ func preserveOwner(tmp *os.File, dst string) {
 		return
 	}
 	_ = tmp.Chown(int(sys.Uid), int(sys.Gid))
+}
+
+// syncDir fsyncs a directory so a rename into it survives a power cut. Some
+// filesystems do not support it, which surfaces as ErrInvalid and is tolerated.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	if err := d.Sync(); err != nil && !errors.Is(err, os.ErrInvalid) {
+		return err
+	}
+	return nil
 }

@@ -556,13 +556,10 @@ func writeFileAtomic(dst string, data []byte, perm os.FileMode) error {
 	if err := os.Rename(tmpName, dst); err != nil {
 		return fmt.Errorf("atomic write: %w", err)
 	}
-	// Fsync the directory so the rename itself survives a power cut.
-	d, err := os.Open(dir)
-	if err != nil {
-		return fmt.Errorf("atomic write: %w", err)
-	}
-	defer d.Close()
-	if err := d.Sync(); err != nil && !errors.Is(err, os.ErrInvalid) {
+	// Fsync the directory so the rename itself survives a power cut. This is a
+	// Unix durability guarantee; on Windows you cannot fsync a directory handle
+	// (it fails with "Access is denied"), so syncDir is a no-op there.
+	if err := syncDir(dir); err != nil {
 		return fmt.Errorf("atomic write: fsync %s: %w", dir, err)
 	}
 	return nil
