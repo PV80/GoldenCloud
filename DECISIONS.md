@@ -635,3 +635,32 @@ access, each person with their own login.
 
 **Consequence.** Expectation-setting for handover: gates 1 and 2 stand
 unchanged, and the staff-facing hostname and logins are GoldenCloud's own.
+
+### D-031 — Considered and declined: rebuilding the drive on WD's still-live web service
+
+**Context.** The owner correctly pointed out that WD discontinued only the
+Discovery desktop app (the Explorer drive-letter experience); the
+home.mycloud.com web portal still works. The natural question follows: why not
+build the drive letter on top of WD's live web service, OneDrive-style, and
+need no office hardware at all?
+
+**Assessment.** Technically semi-possible — the web portal rides a proprietary
+WD cloud API — but rejected as a foundation:
+
+1. WD closed its My Cloud Home developer programme; there is no sanctioned
+   third-party access. Anything built would be reverse-engineered, unsupported,
+   and breakable by any WD-side change, silently and permanently.
+2. The desktop app's shutdown was a business decision about the same service.
+   The web portal is the last surviving piece of a product line being wound
+   down, not a stable platform; building on it re-creates the exact
+   single-vendor dependency whose failure started this project.
+3. All traffic would relay through WD's cloud again: their performance, their
+   terms, their kill switch.
+4. The brief is explicit: "No dependency on Western Digital's cloud services
+   anywhere in the system" and "permanently, on infrastructure I own".
+
+**Consequence.** The architecture stands: WD box as LAN storage, GoldenCloud
+server + tunnel on an always-on machine in the office (existing Windows PC
+preferred, Pi as fallback). The gap the owner feels — "the website still
+works, why add hardware?" — is real but temporary by WD's own trajectory; the
+decision trades a second, later funeral for one small always-on box now.
