@@ -14,17 +14,22 @@ mid-build. Each is a real want, not a bad idea — just not this release.
 
 ## Post-v1 candidates, roughly in order
 
-1. **Per-user quota enforcement** — `users.yaml` already carries the field and
+1. **Drive-letter collision handling in the tray app** — the default `G:` is
+   simply taken on some machines (the owner's laptop being example one) and the
+   mount fails with "mount point in use". The app should detect this and fall
+   back to the next free letter, or surface a friendly picker. Small, but it is
+   the difference between "works everywhere" and a support call per office.
+2. **Per-user quota enforcement** — `users.yaml` already carries the field and
    the server reports it; enforcement on write is not wired up.
-2. **Audit log** — who read/wrote what, append-only, rotated. Nothing today
+3. **Audit log** — who read/wrote what, append-only, rotated. Nothing today
    beyond ordinary access logs.
-3. **Group folders** — a shared `/company` root visible to named users, on top
+4. **Group folders** — a shared `/company` root visible to named users, on top
    of the existing per-user jail.
-4. **Client auto-update** — the tray app checks GitHub Releases and offers an
+5. **Client auto-update** — the tray app checks GitHub Releases and offers an
    in-place upgrade.
-5. **Server-side trash** — deletes move to a per-user `.trash` for 30 days,
+6. **Server-side trash** — deletes move to a per-user `.trash` for 30 days,
    which is also the cheapest possible version of "undo".
-6. **macOS tray client** — same shape as the Windows one, once there is demand.
+7. **macOS tray client** — same shape as the Windows one, once there is demand.
 
 ## Known packaging gaps
 

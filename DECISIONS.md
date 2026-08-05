@@ -603,3 +603,35 @@ Linux-only and refuses loudly elsewhere (D-022).
 **Consequence.** No release artefact changes — Windows is a convenience build,
 not a shipped one. The kit's server binary is stamped `v0.1.0-localtest` so it
 can never be mistaken for a release download.
+
+### D-030 — Owner directions from the first hands-on test, and what they change
+
+**Context.** During the owner's first local test (2026-08-05) three directions
+arrived: (1) `G:` is already taken on their machine — use `Z:`; (2) the system
+"should connect us to https://home.mycloud.com/"; (3) worldwide File Explorer
+access, each person with their own login.
+
+**Recorded as follows.**
+
+1. **Drive letter.** The local-test kit now mounts `Z:`. The real tray app
+   already lets the letter be chosen (settings.ini / sign-in), but it does
+   **not** yet detect that its default letter is taken and pick a free one —
+   on a machine like the owner's, the default `G:` would fail exactly as the
+   kit did. Promoted to the roadmap as a pre-rollout client item.
+2. **home.mycloud.com cannot be the target, and that is by design.** That URL
+   is Western Digital's own cloud portal — the discontinued service this whole
+   project exists to replace. The brief itself mandates "no dependency on
+   Western Digital's cloud services anywhere in the system". GoldenCloud uses
+   the WD box only as local disks (its Local Access SMB share, mounted by the
+   Pi); worldwide access happens under a domain the owner controls via
+   Cloudflare Tunnel. The public hostname will be something like
+   `cloud.<owner-domain>`, never `home.mycloud.com`.
+3. **WD account logins cannot carry over.** Nobody but WD holds those
+   passwords, and the WD account system lives in the cloud being retired.
+   Per-user access is delivered by GoldenCloud's own accounts
+   (`goldencloud user add`, one per person, each jailed to their own folder) —
+   which satisfies "every user with their own login", but they are new logins
+   the owner issues, not the pre-existing WD ones.
+
+**Consequence.** Expectation-setting for handover: gates 1 and 2 stand
+unchanged, and the staff-facing hostname and logins are GoldenCloud's own.
